@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -242,11 +243,16 @@ func TestSettingsAndSync(t *testing.T) {
 		t.Fatal(err)
 	}
 	work := func() int {
-		list, err := s.ApplicationsToSync(10)
-		if err != nil {
-			t.Fatal(err)
+		n := 0
+		for _, query := range []func(int) ([]model.Application, error){s.ApplicationsToPost, s.ApplicationsToEdit,
+			s.ApplicationsToTell} {
+			list, err := query(10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			n += len(list)
 		}
-		return len(list)
+		return n
 	}
 	if work() != 1 {
 		t.Fatal("a queued application is not to sync")
@@ -255,8 +261,14 @@ func TestSettingsAndSync(t *testing.T) {
 	if work() != 0 {
 		t.Fatal("a posted pending application is still to sync")
 	}
-	_ = s.SetApplicationStatus("a_1", model.ApplicationDenied, "no", "", "admin")
-	if work() != 1 {
+	if err := s.Deny("a_1", "no", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Deny("a_1", "again", "admin"); !errors.Is(err, ErrNotPending) {
+		t.Fatalf("a denied application denied again: %v", err)
+	}
+	// (to edit, and to tell)
+	if work() != 2 {
 		t.Fatal("a decided application is not to sync")
 	}
 	got, _ := s.Application("a_1")

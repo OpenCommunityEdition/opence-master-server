@@ -14,7 +14,6 @@ import (
 
 	"github.com/OpenCommunityEdition/opence-master-server/internal/config"
 	"github.com/OpenCommunityEdition/opence-master-server/internal/core"
-	"github.com/OpenCommunityEdition/opence-master-server/internal/model"
 )
 
 // The settings' keys in the database.
@@ -80,8 +79,8 @@ type State struct {
 	User          User
 	ApplicationID string
 	Since         time.Time
-	// the last failure to post or edit a log channel message, or to tell an
-	// applicant (cleared by the next success)
+	// the last synchronisation's failures to post or edit a log channel
+	// message, or to tell an applicant (none once a pass succeeds)
 	SyncError string
 }
 
@@ -598,8 +597,11 @@ const TellAge = 7 * 24 * time.Hour
 
 // Sync brings Discord in line with the applications: posts the new ones to
 // the log channel, edits the messages of those decided since, and tells
-// Discord applicants of decisions. A failure stops the pass, to be tried
-// again at the next one.
+// Discord applicants of decisions. Each kind of work is read and done on its
+// own, so that one that fails does not hold up the others: a failure to post
+// stops the posts for the pass (a permanent one, the channel gone or out of
+// the bot's reach, takes that application off the queue), one to edit stops
+// the edits, to be tried again at the next pass.
 func (b *Bot) Sync() {
 	b.syncing.Lock()
 	defer b.syncing.Unlock()
@@ -609,46 +611,69 @@ func (b *Bot) Sync() {
 	if client == nil {
 		return
 	}
-	list, err := b.M.Store.ApplicationsToSync(50)
-	if err != nil {
-		b.Log.Warn("discord: applications not read", "err", err)
-		return
-	}
-	failure := ""
-	for i := range list {
-		if failure = b.syncOne(client, settings, &list[i]); failure != "" {
-			break
+	var failures []string
+	fail := func(failure string) {
+		if failure != "" {
+			failures = append(failures, failure)
 		}
 	}
-	if failure == "" {
-		failure = b.syncUpdate(client, settings)
-	}
-	b.setState(generation, func(st *State) { st.SyncError = failure })
+	fail(b.syncPosts(client, settings))
+	fail(b.syncEdits(client))
+	fail(b.syncTold(client))
+	fail(b.syncUpdate(client, settings))
+	b.setState(generation, func(st *State) { st.SyncError = strings.Join(failures, "; ") })
 }
 
-func (b *Bot) syncOne(client Client, s Settings, a *model.Application) string {
-	if a.LogQueued && a.LogMessage == "" {
-		if a.Status != model.ApplicationPending {
-			// (decided before it was posted: not posted)
+// syncBatch is how many applications of each kind a pass reads.
+const syncBatch = 50
+
+func (b *Bot) syncPosts(client Client, s Settings) string {
+	// (decided before they were posted: not posted)
+	if err := b.M.Store.UnqueueDecided(); err != nil {
+		return "applications not read: " + err.Error()
+	}
+	if s.Channel == "" {
+		// (posted once a channel is chosen)
+		return ""
+	}
+	list, err := b.M.Store.ApplicationsToPost(syncBatch)
+	if err != nil {
+		return "applications not read: " + err.Error()
+	}
+	for i := range list {
+		a := &list[i]
+		id, err := client.Send(s.Channel, b.applicationMessage(a))
+		if err != nil && Permanent(err) {
+			b.Log.Warn("discord: application not posted, for good", "id", a.ID, "err", err)
 			if err := b.M.Store.SetApplicationPosted(a.ID, "", "", a.Status); err != nil {
 				return err.Error()
 			}
-		} else if s.Channel != "" {
-			id, err := client.Send(s.Channel, b.applicationMessage(a))
-			if err != nil {
-				b.Log.Warn("discord: application not posted", "id", a.ID, "err", err)
-				return fmt.Sprintf("application %s not posted to channel %s: %v", a.ID, s.Channel, err)
-			}
-			if err := b.M.Store.SetApplicationPosted(a.ID, s.Channel, id, a.Status); err != nil {
-				return err.Error()
-			}
-			a.LogChannel, a.LogMessage, a.LogStatus = s.Channel, id, a.Status
+			return fmt.Sprintf("application %s not posted to channel %s, and not tried again: %v", a.ID,
+				s.Channel, err)
+		} else if err != nil {
+			b.Log.Warn("discord: application not posted", "id", a.ID, "err", err)
+			return fmt.Sprintf("application %s not posted to channel %s: %v", a.ID, s.Channel, err)
+		}
+		if err := b.M.Store.SetApplicationPosted(a.ID, s.Channel, id, a.Status); err != nil {
+			return err.Error()
 		}
 	}
-	b.mu.Lock()
-	deciding := b.deciding[a.ID]
-	b.mu.Unlock()
-	if a.LogMessage != "" && a.LogStatus != a.Status && !deciding {
+	return ""
+}
+
+func (b *Bot) syncEdits(client Client) string {
+	list, err := b.M.Store.ApplicationsToEdit(syncBatch)
+	if err != nil {
+		return "applications not read: " + err.Error()
+	}
+	for i := range list {
+		a := &list[i]
+		b.mu.Lock()
+		deciding := b.deciding[a.ID]
+		b.mu.Unlock()
+		if deciding {
+			continue
+		}
 		if err := client.Edit(a.LogChannel, a.LogMessage, b.applicationMessage(a)); err != nil && !Permanent(err) {
 			b.Log.Warn("discord: application message not edited", "id", a.ID, "err", err)
 			return fmt.Sprintf("the message of application %s not edited: %v", a.ID, err)
@@ -660,7 +685,16 @@ func (b *Bot) syncOne(client Client, s Settings, a *model.Application) string {
 			return err.Error()
 		}
 	}
-	if a.DiscordID != "" && a.ToldStatus != a.Status && a.Status != model.ApplicationPending {
+	return ""
+}
+
+func (b *Bot) syncTold(client Client) string {
+	list, err := b.M.Store.ApplicationsToTell(syncBatch)
+	if err != nil {
+		return "applications not read: " + err.Error()
+	}
+	for i := range list {
+		a := &list[i]
 		if b.M.Now().Unix()-a.Updated <= int64(TellAge/time.Second) {
 			if err := client.DM(a.DiscordID, b.decisionMessage(a)); err != nil {
 				// (best effort: the applicant may take no direct messages)

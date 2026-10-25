@@ -172,35 +172,51 @@ func (m *Master) checkLimits(keyID string, unproven bool) error {
 }
 
 // Apply stores an application, from a Discord user (the bot's) or from the
-// command line (none), and tells the admins; actor is the audit log's.
+// command line (none), and tells the admins; actor is the audit log's. The
+// applications are taken one at a time, so that a user's or a key's sent at
+// once do not each pass the limits that the others' storing would break.
 func (m *Master) Apply(in ApplicationInput, actor string) (*model.Application, error) {
+	m.applying.Lock()
+	a, recent, err := m.apply(in, actor)
+	m.applying.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	m.announce(a, a.LogQueued, recent+1)
+	m.changed(a.ID)
+	return a, nil
+}
+
+// apply checks and stores an application, returning it and the number of
+// applications in the hour before it.
+func (m *Master) apply(in ApplicationInput, actor string) (*model.Application, int, error) {
 	in.DiscordID = strings.TrimSpace(in.DiscordID)
 	in.DiscordName = strings.TrimSpace(in.DiscordName)
 	if in.DiscordID != "" {
 		if !discordIDPattern.MatchString(in.DiscordID) {
-			return nil, &FieldError{"discord_id", "a Discord user id"}
+			return nil, 0, &FieldError{"discord_id", "a Discord user id"}
 		}
 		if err := m.checkUser(in.DiscordID); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 	}
 	in.Name = strings.TrimSpace(in.Name)
 	in.Region = strings.ToLower(strings.TrimSpace(in.Region))
 	switch {
 	case len(in.DiscordName) > 37 || !Printable(in.DiscordName):
-		return nil, &FieldError{"discord", "up to 37 printable ASCII characters"}
+		return nil, 0, &FieldError{"discord", "up to 37 printable ASCII characters"}
 	case len(in.Name) < 3 || len(in.Name) > 32 || !Printable(in.Name):
-		return nil, &FieldError{"name", "3 to 32 printable ASCII characters"}
+		return nil, 0, &FieldError{"name", "3 to 32 printable ASCII characters"}
 	case in.Servers < 1 || in.Servers > 64:
-		return nil, &FieldError{"servers", "1 to 64"}
+		return nil, 0, &FieldError{"servers", "1 to 64"}
 	case !regionPattern.MatchString(in.Region):
-		return nil, &FieldError{"region", "up to 16 of a-z, 0-9 and -"}
+		return nil, 0, &FieldError{"region", "up to 16 of a-z, 0-9 and -"}
 	case len(in.Note) > 1000:
-		return nil, &FieldError{"note", "1000 characters at most"}
+		return nil, 0, &FieldError{"note", "1000 characters at most"}
 	}
 	public, err := sign.ParsePublicKey(strings.TrimSpace(in.PublicKey))
 	if err != nil {
-		return nil, &FieldError{"public_key", err.Error()}
+		return nil, 0, &FieldError{"public_key", err.Error()}
 	}
 	note := strings.Map(func(r rune) rune {
 		if r == '\n' || (r >= 0x20 && r < 0x7f) {
@@ -211,30 +227,30 @@ func (m *Master) Apply(in ApplicationInput, actor string) (*model.Application, e
 	proofOK := false
 	if in.Proof != nil && (strings.TrimSpace(in.Proof.Nonce) != "" || strings.TrimSpace(in.Proof.Signature) != "") {
 		if err := m.CheckProof(public, in.Proof, in.DiscordID); err != nil {
-			return nil, &FieldError{"proof", err.Error()}
+			return nil, 0, &FieldError{"proof", err.Error()}
 		}
 		proofOK = true
 	} else if m.Config.RequireProof {
-		return nil, &FieldError{"proof", "this master asks for a proof of key"}
+		return nil, 0, &FieldError{"proof", "this master asks for a proof of key"}
 	}
 	keyID := sign.KeyID(public)
 	if known, err := m.KeyKnown(keyID); err != nil {
-		return nil, err
+		return nil, 0, err
 	} else if known {
-		return nil, refuse("key_exists", "key %s belongs to a publisher already", keyID)
+		return nil, 0, refuse("key_exists", "key %s belongs to a publisher already", keyID)
 	}
 	if err := m.checkLimits(keyID, !proofOK); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if latest, err := m.Store.LatestApplicationForKey(keyID); err == nil && latest.Status == model.ApplicationPending {
-		return nil, refuse("duplicate", "application %s for key %s is pending", latest.ID, keyID)
+		return nil, 0, refuse("duplicate", "application %s for key %s is pending", latest.ID, keyID)
 	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
-		return nil, err
+		return nil, 0, err
 	}
 	now := m.now()
 	recent, err := m.Store.ApplicationsSince(now - 3600)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	// (past the hour's number, an application is not announced one by one)
 	announced := m.Config.ApplicationsPerHour <= 0 || recent < m.Config.ApplicationsPerHour
@@ -245,12 +261,10 @@ func (m *Master) Apply(in ApplicationInput, actor string) (*model.Application, e
 		ToldStatus: model.ApplicationPending,
 	}
 	if err := m.Store.CreateApplication(a); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	_ = m.Store.Audit(actor, "apply", a.ID, fmt.Sprintf("key %s, %d servers", keyID, in.Servers))
-	m.announce(a, announced, recent+1)
-	m.changed(a.ID)
-	return a, nil
+	return a, recent, nil
 }
 
 // announce tells the admins of an application (the webhook, and the bot's

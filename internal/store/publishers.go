@@ -128,21 +128,70 @@ func (s *Store) UnprovenApplicationsSince(since int64) (int, error) {
 	return s.count(`proof_ok = 0 AND created >= ?`, since)
 }
 
-// SetApplicationStatus records a decision on an application, and who made
-// it.
-func (s *Store) SetApplicationStatus(id, status, reason, publisherID, decidedBy string) error {
-	_, err := s.db.Exec(`UPDATE applications SET status = ?, reason = ?, publisher_id = ?, decided_by = ?, updated = ?
-		WHERE id = ?`, status, reason, publisherID, decidedBy, s.now(), id)
+// ErrNotPending is returned for a decision on an application that is not
+// pending (decided already, perhaps a moment before by another approver).
+var ErrNotPending = errors.New("the application is not pending")
+
+// ErrKeyExists is returned for an approval of a key that belongs to a
+// publisher already.
+var ErrKeyExists = errors.New("the key belongs to a publisher already")
+
+// decide records a decision on a pending application, first in its
+// transaction, so that of two decisions at once only one is made.
+func (s *Store) decide(tx *sql.Tx, id, status, reason, publisherID, decidedBy string) error {
+	result, err := tx.Exec(`UPDATE applications SET status = ?, reason = ?, publisher_id = ?, decided_by = ?,
+		updated = ? WHERE id = ? AND status = ?`, status, reason, publisherID, decidedBy, s.now(), id,
+		model.ApplicationPending)
+	if err != nil {
+		return err
+	}
+	if n, err := result.RowsAffected(); err != nil {
+		return err
+	} else if n != 1 {
+		return ErrNotPending
+	}
+	return nil
+}
+
+// Deny denies a pending application (ErrNotPending if it is not pending).
+func (s *Store) Deny(id, reason, decidedBy string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := s.decide(tx, id, model.ApplicationDenied, reason, "", decidedBy); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ApplicationsToPost returns, oldest first, the pending applications still
+// to be posted to the log channel.
+func (s *Store) ApplicationsToPost(limit int) ([]model.Application, error) {
+	return s.applications(`WHERE log_queued = 1 AND log_message = '' AND status = ? ORDER BY created LIMIT ?`,
+		model.ApplicationPending, limit)
+}
+
+// UnqueueDecided takes the applications decided before they were posted to
+// the log channel off its queue, unposted.
+func (s *Store) UnqueueDecided() error {
+	_, err := s.db.Exec(`UPDATE applications SET log_channel = '', log_status = status, log_queued = 0
+		WHERE log_queued = 1 AND log_message = '' AND status != ?`, model.ApplicationPending)
 	return err
 }
 
-// ApplicationsToSync returns, oldest first, the applications the Discord bot
-// has work for: one still to be posted to the log channel, one whose posted
-// message shows another status than its own, and one whose Discord
-// applicant was not told of its status.
-func (s *Store) ApplicationsToSync(limit int) ([]model.Application, error) {
-	return s.applications(`WHERE log_queued = 1 OR (log_message != '' AND log_status != status) OR
-		(discord_id != '' AND told_status != status) ORDER BY created LIMIT ?`, limit)
+// ApplicationsToEdit returns, oldest first, the applications whose posted
+// message shows another status than their own.
+func (s *Store) ApplicationsToEdit(limit int) ([]model.Application, error) {
+	return s.applications(`WHERE log_message != '' AND log_status != status ORDER BY created LIMIT ?`, limit)
+}
+
+// ApplicationsToTell returns, oldest first, the decided applications whose
+// Discord applicant was not told of their status.
+func (s *Store) ApplicationsToTell(limit int) ([]model.Application, error) {
+	return s.applications(`WHERE discord_id != '' AND told_status != status AND status != ? ORDER BY created
+		LIMIT ?`, model.ApplicationPending, limit)
 }
 
 // SetApplicationPosted records an application's log channel message (none,
@@ -372,14 +421,25 @@ func (s *Store) KeyLastUsed(keyIDs []string) (map[string]int64, error) {
 	return out, rows.Err()
 }
 
-// Approve makes a publisher from an application in one transaction: the
-// record, this master's opinion, the key, and the application's decision.
+// Approve makes a publisher from a pending application in one transaction:
+// the application's decision (ErrNotPending if it is not pending), the
+// record, this master's opinion and the key (ErrKeyExists if it belongs to
+// a publisher already).
 func (s *Store) Approve(a *model.Application, p *model.Publisher, o model.Opinion, k model.KeyRecord) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if err := s.decide(tx, a.ID, model.ApplicationApproved, "", p.ID, a.DecidedBy); err != nil {
+		return err
+	}
+	var known int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM keys WHERE key_id = ?`, k.KeyID).Scan(&known); err != nil {
+		return err
+	} else if known > 0 {
+		return ErrKeyExists
+	}
 	if _, err := tx.Exec(`INSERT INTO publishers (`+publisherColumns+`) VALUES (`+placeholders(8)+`)`,
 		p.ID, p.Name, p.Email, p.Discord, p.Origin, p.Since, p.Created, p.Updated); err != nil {
 		return err
@@ -388,13 +448,8 @@ func (s *Store) Approve(a *model.Application, p *model.Publisher, o model.Opinio
 		VALUES (?, ?, ?, ?, ?, ?)`, o.PublisherID, o.Source, o.Status, o.Quota, o.Reason, o.Updated); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`INSERT INTO keys (`+keyColumns+`) VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT (key_id, source) DO UPDATE SET publisher_id = excluded.publisher_id, status = excluded.status,
-		updated = excluded.updated`, k.KeyID, k.Source, k.PublisherID, k.PublicKey, k.Status, k.Updated); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`UPDATE applications SET status = ?, publisher_id = ?, decided_by = ?, updated = ?
-		WHERE id = ?`, model.ApplicationApproved, p.ID, a.DecidedBy, s.now(), a.ID); err != nil {
+	if _, err := tx.Exec(`INSERT INTO keys (`+keyColumns+`) VALUES (?, ?, ?, ?, ?, ?)`,
+		k.KeyID, k.Source, k.PublisherID, k.PublicKey, k.Status, k.Updated); err != nil {
 		return err
 	}
 	return tx.Commit()

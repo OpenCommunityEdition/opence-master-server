@@ -372,6 +372,30 @@ def test_the_whole_flow(master):
         responder.close()
 
 
+def test_longest_listing(master):
+    # a password game with every name at its length: 268 bytes, read and taken; a byte more is refused
+    host = op.new_seed()
+    sealed = op.seal_token(b"\x01" * 32, op.public_key(host), os.urandom(16))
+    longest = op.make_listing(host, "n" * 32, "m" * 32, "g" * 24, players=16, max_players=16, kind=0x81,
+                              flags=op.LISTING_OPEN | op.LISTING_PASSWORD, sealed=sealed)
+    assert len(longest) == op.MAXIMUM_LISTING_SIZE == 268
+    read = op.read_listing(longest)
+    assert (read["name"], read["map"], read["gametype"], read["sealed"]) == ("n" * 32, "m" * 32, "g" * 24, sealed)
+    shortest = op.make_listing(host, "", "", "", flags=op.LISTING_OPEN)
+    assert len(shortest) == op.MINIMUM_LISTING_SIZE == 140
+    op.read_listing(shortest)
+    for bad in (longest + b"\x00", shortest[:-1]):
+        with pytest.raises(ValueError):
+            op.read_listing(bad)
+    seed, _ = approved_publisher(master, name="Longest listing")
+    publisher = op.Publisher(master.url, master.key_id, seed, "longest", 2302)
+    status, answer, _ = publisher.publish(longest)
+    assert status in (200, 202), answer
+    time.sleep(1.05)
+    status, answer, _ = publisher.publish(longest + b"\x00")
+    assert status == 400 and code(answer) == "listing", answer
+
+
 def test_refusals(master):
     seed, _ = approved_publisher(master, quota=1)
     publisher = op.Publisher(master.url, master.key_id, seed, "refusals", 2302)

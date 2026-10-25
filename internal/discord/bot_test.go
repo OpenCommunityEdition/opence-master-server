@@ -1131,3 +1131,113 @@ func fieldsTextOrDescription(m discord.Message) string {
 	}
 	return m.Embeds[0].Title + " " + m.Embeds[0].Description
 }
+
+// A stale Approve button (the application denied on the website since) does
+// not overturn the denial; nor is a denial's reason past 300 characters
+// taken from the website.
+func TestStaleApproveAfterDenial(t *testing.T) {
+	h, c := connected(t, nil)
+	a, post := posted(t, h, c)
+	h.post("/admin/applications/"+a.ID+"/deny", url.Values{"reason": {strings.Repeat("x", 301)}})
+	if got, _ := h.m.Store.Application(a.ID); got.Status != model.ApplicationPending {
+		t.Fatalf("denied with a reason of 301 characters: %+v", got)
+	}
+	if status, _ := h.post("/admin/applications/"+a.ID+"/deny", url.Values{"reason": {"not an operator"}}); status != 200 {
+		t.Fatalf("the admin's denial: %d", status)
+	}
+	r := c.do(t, button(approver, post.M.Buttons[0].ID, post.ID, approvers))
+	if !r.Ephemeral || r.Message == nil || !strings.Contains(r.Message.Content, "Not done") ||
+		!strings.Contains(r.Message.Content, "denied") {
+		t.Fatalf("the stale approval's reply: %+v", r)
+	}
+	got, _ := h.m.Store.Application(a.ID)
+	records, _ := h.m.Store.KeyRecords(a.KeyID)
+	publishers, _ := h.m.Store.Publishers()
+	if got.Status != model.ApplicationDenied || got.PublisherID != "" || len(records) != 0 || len(publishers) != 0 {
+		t.Fatalf("%+v, keys %+v, publishers %+v", got, records, publishers)
+	}
+}
+
+// A failure to post holds up neither the edits nor the direct messages; a
+// permanent one (the channel gone, or out of the bot's reach) takes the
+// application off the queue, as a permanent failure to edit does.
+func TestSyncPastAPostFailure(t *testing.T) {
+	h, c := connected(t, nil)
+	a, _ := posted(t, h, c)
+	// (as on the command line's process: no synchronisation but the test's)
+	h.m.Watcher = nil
+	c.mu.Lock()
+	c.sendErr = errors.New("connection reset")
+	c.mu.Unlock()
+	// (an application older than a's, still to be posted)
+	b := &model.Application{ID: "a_older", Name: "n", KeyID: "k", Status: model.ApplicationPending, Created: 1,
+		LogQueued: true}
+	if err := h.m.Store.CreateApplication(b); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.m.Deny(a.ID, "not an operator", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	h.bot.Sync()
+	if _, edits, dms := c.counts(); edits != 1 || dms != 1 {
+		t.Fatalf("past a failure to post: %d edits, %d DMs", edits, dms)
+	}
+	if state := h.bot.State(); !strings.Contains(state.SyncError, "connection reset") {
+		t.Fatalf("state %+v", state)
+	}
+	if got, _ := h.m.Store.Application(b.ID); !got.LogQueued {
+		t.Fatalf("taken off the queue for a passing failure: %+v", got)
+	}
+	c.mu.Lock()
+	c.sendErr = &discord.Error{Status: 403, Message: "Missing Access"}
+	c.mu.Unlock()
+	h.bot.Sync()
+	if state := h.bot.State(); !strings.Contains(state.SyncError, "Missing Access") {
+		t.Fatalf("state %+v", state)
+	}
+	if got, _ := h.m.Store.Application(b.ID); got.LogQueued || got.LogMessage != "" ||
+		got.Status != model.ApplicationPending {
+		t.Fatalf("still queued after a permanent failure: %+v", got)
+	}
+	h.bot.Sync()
+	if state := h.bot.State(); state.SyncError != "" {
+		t.Fatalf("tried again: %+v", state)
+	}
+}
+
+// With no log channel chosen, the applications waiting for one do not hold
+// up the edits and direct messages of others, however many they are.
+func TestSyncWithoutChannel(t *testing.T) {
+	h := newHarness(t, nil, nil)
+	if status, body := h.configure(settings()); status != 200 {
+		t.Fatalf("settings: %d %s", status, body)
+	}
+	h.until("connected", func() bool { return h.bot.State().Status == discord.Connected })
+	c := h.fake.current()
+	h.m.Watcher = nil
+	for i := 0; i < 60; i++ {
+		if err := h.m.Store.CreateApplication(&model.Application{ID: fmt.Sprintf("a_queued%d", i), Name: "n",
+			KeyID: fmt.Sprintf("k%d", i), DiscordID: fmt.Sprintf("2000000000000001%02d", i),
+			Status: model.ApplicationPending, Created: int64(1000 + i), LogQueued: true,
+			ToldStatus: model.ApplicationPending}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// posted before the channel was unchosen
+	if err := h.m.Store.CreateApplication(&model.Application{ID: "a_posted", Name: "n", KeyID: "kp",
+		DiscordID: applicant.ID, Status: model.ApplicationPending, Created: 2000, LogChannel: channel,
+		LogMessage: "400000000000000099", LogStatus: model.ApplicationPending,
+		ToldStatus: model.ApplicationPending}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.m.Deny("a_posted", "not an operator", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	h.bot.Sync()
+	if sent, edits, dms := c.counts(); sent != 0 || edits != 1 || dms != 1 || c.dms[0].To != applicant.ID {
+		t.Fatalf("%d posted, %d edits, %d DMs", sent, edits, dms)
+	}
+	if got, _ := h.m.Store.Application("a_queued59"); !got.LogQueued {
+		t.Fatalf("taken off the queue with no channel: %+v", got)
+	}
+}

@@ -4,6 +4,8 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/OpenCommunityEdition/opence-master-server/internal/model"
 	"github.com/OpenCommunityEdition/opence-master-server/internal/sign"
@@ -38,8 +40,28 @@ func (m *Master) KeyKnown(keyID string) (bool, error) {
 	return len(records) > 0, err
 }
 
-// Approve approves an application: a publisher, this master's opinion and
-// the key, active.
+// MaximumReason is the longest denial reason, in characters: the
+// applicant's direct message, with it, fits Discord's 2000.
+const MaximumReason = 300
+
+// notPending refuses a decision on an application decided already (perhaps
+// a moment before, by another approver).
+func (m *Master) notPending(id string) error {
+	a, err := m.Store.Application(id)
+	if err != nil {
+		return refuse("not_pending", "application %s is not pending", id)
+	}
+	if a.Status == model.ApplicationApproved {
+		return refuse("already_approved", "application %s is approved already (publisher %s)", a.ID, a.PublisherID)
+	}
+	return refuse("not_pending", "application %s is %s", a.ID, a.Status)
+}
+
+// Approve approves a pending application: a publisher, this master's
+// opinion and the key, active. The decision is made in one transaction
+// that first takes the application from pending, so that of two decisions
+// at once (two approvers, or Discord and the admin page) one is made and the
+// other refused; a denied application is not approved.
 func (m *Master) Approve(applicationID string, quota int, actor string) (*model.Publisher, error) {
 	a, err := m.Store.Application(applicationID)
 	if errors.Is(err, store.ErrNotFound) {
@@ -47,13 +69,8 @@ func (m *Master) Approve(applicationID string, quota int, actor string) (*model.
 	} else if err != nil {
 		return nil, err
 	}
-	if a.Status == model.ApplicationApproved {
-		return nil, refuse("already_approved", "application %s is approved already (publisher %s)", a.ID, a.PublisherID)
-	}
-	if known, err := m.KeyKnown(a.KeyID); err != nil {
-		return nil, err
-	} else if known {
-		return nil, refuse("key_exists", "key %s belongs to a publisher already", a.KeyID)
+	if a.Status != model.ApplicationPending {
+		return nil, m.notPending(a.ID)
 	}
 	if quota == 0 {
 		quota = m.Config.DefaultQuota
@@ -68,7 +85,12 @@ func (m *Master) Approve(applicationID string, quota int, actor string) (*model.
 	k := model.KeyRecord{KeyID: a.KeyID, Source: m.KeyID, PublisherID: p.ID, PublicKey: a.PublicKey,
 		Status: model.KeyActive, Updated: now}
 	a.DecidedBy = actor
-	if err := m.Store.Approve(a, p, o, k); err != nil {
+	switch err := m.Store.Approve(a, p, o, k); {
+	case errors.Is(err, store.ErrNotPending):
+		return nil, m.notPending(a.ID)
+	case errors.Is(err, store.ErrKeyExists):
+		return nil, refuse("key_exists", "key %s belongs to a publisher already", a.KeyID)
+	case err != nil:
 		return nil, err
 	}
 	_ = m.Store.Audit(actor, "approve", a.ID, fmt.Sprintf("publisher %s, key %s, quota %d", p.ID, a.KeyID, quota))
@@ -85,8 +107,16 @@ func (m *Master) Approve(applicationID string, quota int, actor string) (*model.
 	return p, nil
 }
 
-// Deny refuses an application, with a reason the operator is told.
+// Deny refuses a pending application, with a reason the operator is told
+// (MaximumReason characters at most), as atomically as Approve.
 func (m *Master) Deny(applicationID, reason, actor string) error {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return refuse("schema", "a denial needs a reason")
+	}
+	if utf8.RuneCountInString(reason) > MaximumReason {
+		return refuse("schema", "a denial's reason is %d characters at most", MaximumReason)
+	}
 	a, err := m.Store.Application(applicationID)
 	if errors.Is(err, store.ErrNotFound) {
 		return refuse("not_found", "no application %s", applicationID)
@@ -94,9 +124,11 @@ func (m *Master) Deny(applicationID, reason, actor string) error {
 		return err
 	}
 	if a.Status != model.ApplicationPending {
-		return refuse("not_pending", "application %s is %s", a.ID, a.Status)
+		return m.notPending(a.ID)
 	}
-	if err := m.Store.SetApplicationStatus(a.ID, model.ApplicationDenied, reason, "", actor); err != nil {
+	if err := m.Store.Deny(a.ID, reason, actor); errors.Is(err, store.ErrNotPending) {
+		return m.notPending(a.ID)
+	} else if err != nil {
 		return err
 	}
 	_ = m.Store.Audit(actor, "deny", a.ID, reason)

@@ -384,6 +384,9 @@ def password_key(password, signing_key):
 
 LISTING_OPEN, LISTING_IN_PROGRESS, LISTING_TEAMS, LISTING_CLOSED, LISTING_PASSWORD, LISTING_DEDICATED = 1, 2, 4, 8, 16, 32
 SIGNATURE_LABEL = b"hceu-lobby-1"
+# a listing's sizes: all names empty, and a password with every name at its length
+# (14 + 32 + 16 + 3 + 1 + 1 + 1 + 8 + 64, and 14 + 32 + 56 + 3 + 33 + 33 + 25 + 8 + 64)
+MINIMUM_LISTING_SIZE, MAXIMUM_LISTING_SIZE = 140, 268
 
 
 def _text(value, maximum):
@@ -419,7 +422,7 @@ def make_listing(host_seed, name, map_name, gametype, players=0, max_players=16,
 
 def read_listing(data):
     """Reads a listing as listing_read does and checks its signature; raises ValueError."""
-    if not 140 <= len(data) <= 264 or data[:3] != b"HL\x01":
+    if not MINIMUM_LISTING_SIZE <= len(data) <= MAXIMUM_LISTING_SIZE or data[:3] != b"HL\x01":
         raise ValueError("malformed")
     version, flags = struct.unpack(">HB", data[3:6])
     sequence, unix_time = struct.unpack(">II", data[6:14])

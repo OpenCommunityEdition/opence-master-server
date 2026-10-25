@@ -16,6 +16,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -60,6 +61,8 @@ type Master struct {
 	// Discord bot); nil for none
 	Watcher Watcher
 
+	// held while an application is checked and stored (Apply)
+	applying sync.Mutex
 	trustAll bool
 	trusted  map[string]bool
 	list     listCache

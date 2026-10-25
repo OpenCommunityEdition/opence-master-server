@@ -80,6 +80,10 @@ func TestLimits(t *testing.T) {
 	f.Flags |= FlagPassword
 	f.Sealed = make([]byte, SealedSize)
 	bytes := Make(host(), f)
+	// (the game's MAXIMUM_LISTING_SIZE and MINIMUM_LISTING_SIZE, p2p_lobby.c)
+	if MaximumSize != 268 || MinimumSize != 140 {
+		t.Fatalf("sizes %d to %d, not 140 to 268", MinimumSize, MaximumSize)
+	}
 	if len(bytes) != MaximumSize {
 		t.Fatalf("the longest listing is %d, not %d", len(bytes), MaximumSize)
 	}
