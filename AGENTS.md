@@ -12,6 +12,7 @@ gofmt -l .                                              # must print nothing
 go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...   # CI fails on any finding
 python3 -m pytest -q tests/conformance                  # the protocol, end to end
 sh -n install.sh && dash -n install.sh                  # the installer is POSIX sh
+go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/*.yml
 ```
 
 Tests touch nothing beyond loopback: Discord is a fake `Client`
@@ -83,7 +84,11 @@ others report themselves as development builds.
 CI and the release use the latest patch of Go 1.26 (`go-version: "1.26.x"`,
 `check-latest`), not the `go 1.26.0` floor in `go.mod`, whose standard
 library has known vulnerabilities. Actions are pinned to commit SHAs with
-the version in a comment.
+the version in a comment. A workflow YAML cannot parse runs nothing on its
+tag, with no error but a failed run named after the file: check them with
+`go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/*.yml`
+(CI does), and mind a `: ` inside an unquoted value (a step's name). GitHub
+runs a tag's own workflow file, so a fix needs a new tag.
 
 ## The installer
 

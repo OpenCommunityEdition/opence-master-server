@@ -19,6 +19,8 @@ jobs:
           check-latest: true
       - name: go vet
         run: go vet ./...
+      - name: the workflows parse (actionlint; a broken one is skipped without a word)
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/*.yml
       - name: go test
         run: go test -race ./...
       - name: the test vectors are what the code makes
