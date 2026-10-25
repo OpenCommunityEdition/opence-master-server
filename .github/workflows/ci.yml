@@ -63,11 +63,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: build the image
-        run: docker build --build-arg VERSION=${GITHUB_SHA::12} -t opence-master:ci .
+        run: docker build --build-arg "VERSION=${GITHUB_SHA::12}" -t opence-master:ci .
       - name: smoke test the image
         run: |
           docker run --rm opence-master:ci version
-          docker run --rm opence-master:ci no-such-command && exit 1 || test $? -eq 2
+          # (bad usage exits 2)
+          status=0
+          docker run --rm opence-master:ci no-such-command || status=$?
+          test "$status" -eq 2
           # a first start with no settings: it makes its key and prints the setup link
           id=$(docker run -d opence-master:ci)
           sleep 3
