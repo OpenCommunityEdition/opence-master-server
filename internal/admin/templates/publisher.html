@@ -1,0 +1,47 @@
+{{define "content"}}
+{{with .Data.State}}
+<div class="panel">
+<h2>{{.Publisher.Name}} ({{.Publisher.ID}})</h2>
+<dl class="fields">
+<dt>Status</dt><dd>{{if .Status}}{{.Status}}{{else}}no trusted record{{end}}{{if and .StatusBy (ne .StatusBy $.KeyID)}} (set by master <code>{{.StatusBy}}</code>){{end}}</dd>
+<dt>Quota</dt><dd>{{.Quota}}</dd>
+{{if .Publisher.Email}}<dt>E-mail</dt><dd>{{.Publisher.Email}}</dd>{{end}}
+<dt>Discord</dt><dd>{{.Publisher.Discord}}</dd>
+<dt>Origin</dt><dd><code>{{.Publisher.Origin}}</code>{{if eq .Publisher.Origin $.KeyID}} (this master){{end}}</dd>
+<dt>Since</dt><dd>{{time .Publisher.Since}}</dd>
+</dl>
+</div>
+<div class="panel">
+<h3>Each master's word</h3>
+<table><thead><tr><th>Master</th><th>Status</th><th class="num">Quota</th><th>Reason</th><th>Updated</th></tr></thead><tbody>
+{{range .Opinions}}<tr><td><code>{{.Source}}</code>{{if eq .Source $.KeyID}} (here){{end}}</td><td>{{.Status}}</td><td class="num">{{.Quota}}</td><td>{{.Reason}}</td><td>{{time .Updated}}</td></tr>{{end}}
+</tbody></table>
+<p class="hint">The most restrictive status among this master and its trusted peers is the publisher's.</p>
+</div>
+<div class="panel">
+<form class="inline" method="post" action="/admin/publishers/{{.Publisher.ID}}/status">
+<input type="hidden" name="csrf" value="{{$.Data.CSRF}}">
+<input type="text" name="reason" maxlength="300" placeholder="Reason">
+<button class="danger" type="submit" name="status" value="suspended">Suspend</button>
+<button type="submit" name="status" value="approved">Resume</button>
+<button class="danger" type="submit" name="status" value="revoked">Revoke for good</button>
+</form>
+<form class="inline" method="post" action="/admin/publishers/{{.Publisher.ID}}/quota">
+<input type="hidden" name="csrf" value="{{$.Data.CSRF}}">
+<input type="number" name="quota" min="1" max="1000" value="{{.Quota}}">
+<button class="secondary" type="submit">Set quota</button>
+</form>
+</div>
+<div class="panel">
+<h3>Keys</h3>
+<table><thead><tr><th>Key id</th><th>Public key</th><th>Status</th><th>Last used</th><th></th></tr></thead><tbody>
+{{range .Keys}}<tr><td><code>{{.KeyID}}</code></td><td><code>{{.PublicKey}}</code></td><td>{{.Status}}</td><td>{{time .LastUsed}}</td>
+<td>{{if eq .Status "active"}}<form class="inline" method="post" action="/admin/keys/{{.KeyID}}/revoke"><input type="hidden" name="csrf" value="{{$.Data.CSRF}}"><input type="hidden" name="publisher" value="{{$.Data.State.Publisher.ID}}"><input type="text" name="reason" maxlength="300" placeholder="Reason"><button class="danger" type="submit">Revoke key</button></form>{{end}}</td></tr>{{end}}
+</tbody></table>
+</div>
+{{end}}
+<div class="panel">
+<h3>Servers</h3>
+{{template "servertable" .}}
+</div>
+{{end}}

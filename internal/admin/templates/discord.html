@@ -1,0 +1,37 @@
+{{define "content"}}
+<div class="panel">
+<h2>Discord bot</h2>
+<p class="hint">Operators apply with the bot's <code>/apply</code> command in the Discord server below; each application is posted to the log channel with Approve and Deny buttons, which only members of an approver role may press. The server's admins (Administrator or Manage Server) choose the channel and the roles with the bot's <code>/configure</code> (or <code>/config</code>) command. Saving connects the bot again.</p>
+{{with .Data.State}}
+<dl class="fields">
+<dt>State</dt><dd>{{if eq .Status "connected"}}<span class="ok">connected</span> as {{.User.Name}}{{else if eq .Status "connecting"}}<span class="warn">connecting</span>{{with .Reason}} ({{.}}){{end}}{{else if eq .Status "error"}}<span class="bad">error</span>: {{.Reason}}{{else}}<span class="muted">off</span>{{with .Reason}}: {{.}}{{end}}{{end}}{{if not .Since.IsZero}} <span class="muted">since {{time .Since.Unix}}</span>{{end}}</dd>
+{{with .SyncError}}<dt>Last failure</dt><dd><span class="bad">{{.}}</span></dd>{{end}}
+<dt>Log channel</dt><dd>{{with $.Data.Channel}}<code>{{.}}</code>{{else}}<span class="muted">none: run <code>/configure</code> in Discord</span>{{end}}{{if $.Data.FromEnv.channel}} <span class="muted">(MASTER_DISCORD_CHANNEL)</span>{{end}}</dd>
+<dt>Approver roles</dt><dd>{{with $.Data.Roles}}<code>{{.}}</code>{{else}}<span class="muted">none: run <code>/configure</code> in Discord</span>{{end}}{{if $.Data.FromEnv.roles}} <span class="muted">(MASTER_DISCORD_APPROVER_ROLES)</span>{{end}}</dd>
+</dl>
+{{end}}
+</div>
+{{if .Data.State}}
+<form class="stack panel" method="post" action="/admin/discord">
+<input type="hidden" name="csrf" value="{{.Data.CSRF}}">
+<label for="token">Bot token</label>
+<input type="password" id="token" name="token" maxlength="200" autocomplete="off" {{if .Data.FromEnv.token}}disabled placeholder="set by MASTER_DISCORD_TOKEN"{{else if .Data.TokenSet}}placeholder="set (leave empty to keep it)"{{else}}placeholder="not set"{{end}}>
+<p class="hint">{{if .Data.FromEnv.token}}Set by the environment (MASTER_DISCORD_TOKEN).{{else if .Data.TokenSet}}A token is set. It is never shown again; type a new one to replace it.{{else}}No token is set: the bot is off.{{end}} The Developer Portal's Bot page, Reset Token.</p>
+<label for="guild">Server (guild) id</label>
+<input type="text" id="guild" name="guild" maxlength="20" inputmode="numeric" value="{{.Data.Guild}}" {{if .Data.FromEnv.guild}}disabled{{end}}>
+<p class="hint">{{if .Data.FromEnv.guild}}Set by the environment (MASTER_DISCORD_GUILD). {{end}}Where <code>/apply</code> and <code>/configure</code> are registered. With Developer Mode on (User Settings, Advanced), right-click the server, Copy Server ID. A new server clears the log channel and the approver roles.</p>
+<label for="invite">Public invite URL (optional)</label>
+<input type="url" id="invite" name="invite" maxlength="200" placeholder="https://discord.gg/..." value="{{.Data.Invite}}" {{if .Data.FromEnv.invite}}disabled{{end}}>
+<p class="hint">{{if .Data.FromEnv.invite}}Set by the environment (MASTER_DISCORD_INVITE). {{end}}Shown on the public <a href="/apply">/apply</a> page.</p>
+<div class="actions">
+<button type="submit">Save and connect</button>
+{{with .Data.AddURL}}<a class="button secondary" href="{{.}}" target="_blank" rel="noopener">Invite to server</a>{{else}}<button class="secondary" type="button" disabled title="Save a bot token first">Invite to server</button>{{end}}
+</div>
+<p class="hint">Invite to server adds the bot to the server above, with the <code>bot</code> and <code>applications.commands</code> scopes; press Connect again once it is in.</p>
+</form>
+<div class="panel">
+<form class="inline" method="post" action="/admin/discord/reconnect"><input type="hidden" name="csrf" value="{{.Data.CSRF}}"><button class="secondary" type="submit">Connect again</button></form>
+{{if and .Data.TokenSet (not .Data.FromEnv.token)}}<form class="inline" method="post" action="/admin/discord/clear-token"><input type="hidden" name="csrf" value="{{.Data.CSRF}}"><button class="danger" type="submit">Clear the token</button></form>{{end}}
+</div>
+{{end}}
+{{end}}

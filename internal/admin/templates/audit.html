@@ -1,0 +1,12 @@
+{{define "content"}}
+<div class="panel">
+<h2>Audit log</h2>
+<table>
+<thead><tr><th class="num">#</th><th>Time</th><th>Who</th><th>What</th><th>To</th><th>Why</th></tr></thead>
+<tbody>
+{{range .Data.Entries}}<tr><td class="num">{{.N}}</td><td>{{time .Time}}</td><td>{{.Actor}}</td><td>{{.Action}}</td><td><code>{{.Target}}</code></td><td>{{.Detail}}</td></tr>{{end}}
+</tbody>
+</table>
+{{with .Data.Older}}<p><a href="/admin/audit?before={{.}}">Older</a></p>{{end}}
+</div>
+{{end}}

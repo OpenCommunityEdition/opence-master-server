@@ -1,0 +1,8 @@
+{{define "profile"}}
+<label for="name">Name</label>
+<input type="text" id="name" name="name" maxlength="64" required value="{{.Data.Name}}" {{if .Data.FromEnv.name}}disabled{{end}}>
+<p class="hint">{{if .Data.FromEnv.name}}Set by the environment (MASTER_NAME). {{end}}Shown in the master's list, its pages and the Discord bot's messages.</p>
+<label for="contact">Contact (optional)</label>
+<input type="text" id="contact" name="contact" maxlength="200" placeholder="admin@example.org or https://..." value="{{.Data.Contact}}" {{if .Data.FromEnv.contact}}disabled{{end}}>
+<p class="hint">{{if .Data.FromEnv.contact}}Set by the environment (MASTER_CONTACT). {{end}}Who answers for this master: an e-mail address or a URL, shown on its pages and told to denied applicants.</p>
+{{end}}

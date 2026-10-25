@@ -1,0 +1,23 @@
+{{define "content"}}
+<div class="panel">
+<h2>Applications</h2>
+<p><a href="/admin/applications">Pending</a> · <a href="/admin/applications?status=all">All</a></p>
+{{if .Data.Applications}}
+<table>
+<thead><tr><th>Application</th><th>Name</th><th>Key id</th><th class="num">Servers</th><th>Applicant</th><th>Proof</th><th>Status</th><th>Applied</th></tr></thead>
+<tbody>
+{{range .Data.Applications}}<tr>
+<td><a href="/admin/applications/{{.ID}}">{{.ID}}</a></td>
+<td>{{.Name}}</td>
+<td><code>{{.KeyID}}</code></td>
+<td class="num">{{.Servers}}</td>
+<td>{{if .DiscordID}}{{.Discord}} <span class="muted">(Discord)</span>{{else if .Email}}{{.Email}} {{if .EmailVerified}}<span class="ok">verified</span>{{else}}<span class="warn">not verified</span>{{end}}{{else}}<span class="muted">command line</span>{{end}}</td>
+<td>{{if .ProofOK}}<span class="ok">yes</span>{{else}}<span class="bad">NO PROOF</span>{{end}}</td>
+<td>{{.Status}}</td>
+<td>{{time .Created}}</td>
+</tr>{{end}}
+</tbody>
+</table>
+{{else}}<p class="muted">None.</p>{{end}}
+</div>
+{{end}}

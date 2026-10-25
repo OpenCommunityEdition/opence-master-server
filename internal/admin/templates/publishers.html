@@ -1,0 +1,21 @@
+{{define "content"}}
+<div class="panel">
+<h2>Publishers</h2>
+{{if .Data.Publishers}}
+<table>
+<thead><tr><th>Publisher</th><th>Name</th><th>Status</th><th class="num">Quota</th><th class="num">Keys</th><th>Origin</th><th>Since</th></tr></thead>
+<tbody>
+{{range .Data.Publishers}}<tr>
+<td><a href="/admin/publishers/{{.Publisher.ID}}">{{.Publisher.ID}}</a></td>
+<td>{{.Publisher.Name}}</td>
+<td>{{if eq .Status "approved"}}<span class="ok">approved</span>{{else if .Status}}<span class="bad">{{.Status}}</span>{{else}}<span class="muted">no trusted record</span>{{end}}</td>
+<td class="num">{{.Quota}}</td>
+<td class="num">{{len .Keys}}</td>
+<td><code>{{.Publisher.Origin}}</code>{{if eq .Publisher.Origin $.KeyID}} (here){{end}}</td>
+<td>{{since .Publisher.Since}}</td>
+</tr>{{end}}
+</tbody>
+</table>
+{{else}}<p class="muted">None yet.</p>{{end}}
+</div>
+{{end}}

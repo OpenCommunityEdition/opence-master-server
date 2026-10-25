@@ -31,3 +31,16 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# opence-master
+/opence-master
+*.db
+*.db-shm
+*.db-wal
+master.key
+__pycache__/
+.pytest_cache/
+master.env
+*.db.before-*
+*.db.version
+/bin/

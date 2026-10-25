@@ -1,0 +1,62 @@
+# A release: push a version tag (git tag v1.2.0 && git push origin v1.2.0).
+# It builds the binaries, signs their SHA256SUMS with the release key (the
+# RELEASE_SIGNING_KEY secret: the masters' updater installs nothing else),
+# pushes the multi-arch image to ghcr.io (latest, 1.2.0 and 1.2), and then
+# publishes the GitHub release, which the masters see within their
+# MASTER_UPDATE_INTERVAL.
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+      - name: the tag is a version (v1.2.3)
+        run: '[[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]'
+      - name: go vet and go test
+        run: go vet ./... && go test -race ./...
+      - name: binaries
+        run: |
+          mkdir dist
+          for target in linux/amd64 linux/arm64 linux/arm/7; do
+            IFS=/ read -r os arch arm <<< "$target"
+            name="opence-master-$os-$arch${arm:+v$arm}"
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch GOARM=$arm go build -trimpath -ldflags "-s -w \
+              -X github.com/OpenCommunityEdition/opence-master-server/internal/core.Version=$GITHUB_REF_NAME" \
+              -o "dist/$name" ./cmd/opence-master
+          done
+          ./dist/opence-master-linux-amd64 version | grep -q " $GITHUB_REF_NAME "
+          (cd dist && sha256sum opence-master-* > SHA256SUMS)
+      - name: sign SHA256SUMS
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          go run ./cmd/release-sign sign dist/SHA256SUMS
+          go run ./cmd/release-sign verify dist/SHA256SUMS
+      - name: the image, to ghcr.io
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          echo "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          version="${GITHUB_REF_NAME#v}"
+          docker buildx create --use
+          docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 --build-arg "VERSION=$GITHUB_REF_NAME" \
+            -t "$image:latest" -t "$image:$version" -t "$image:${version%.*}" --push .
+      - name: the GitHub release (last: the masters see it once everything is out)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes --verify-tag

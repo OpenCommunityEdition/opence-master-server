@@ -1,0 +1,4 @@
+{$MASTER_DOMAIN} {
+	encode gzip
+	reverse_proxy master:8090
+}

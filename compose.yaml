@@ -1,0 +1,54 @@
+# The master behind Caddy, which gets the certificate and terminates TLS.
+#
+#   cp deploy/master.env.example master.env    # then fill it in
+#   docker compose run --rm master keygen --out /data/master.key
+#   MASTER_DOMAIN=master1.example.org docker compose up -d
+#   docker compose logs master    # the setup link: open it to name the master
+#
+# The master updates itself (the admin pages, or the bot's notice in the
+# applications channel); docker compose pull && docker compose up -d works
+# too.
+#
+# The master believes X-Forwarded-For and X-Forwarded-Proto only from the
+# compose network's addresses (MASTER_TRUSTED_PROXIES), where Caddy is.
+services:
+  master:
+    build: .
+    image: ghcr.io/opencommunityedition/opence-master-server:latest
+    restart: unless-stopped
+    env_file: master.env
+    environment:
+      MASTER_TRUSTED_PROXIES: 172.30.90.0/24
+    volumes:
+      - master-data:/data
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    networks: [master]
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    environment:
+      MASTER_DOMAIN: ${MASTER_DOMAIN:?set MASTER_DOMAIN to the master's domain}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on: [master]
+    networks: [master]
+
+networks:
+  master:
+    ipam:
+      config:
+        - subnet: 172.30.90.0/24
+
+volumes:
+  master-data:
+  caddy-data:
+  caddy-config:

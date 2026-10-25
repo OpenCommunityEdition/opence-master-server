@@ -1,0 +1,62 @@
+# systemd unit for opence-master.
+#
+#   install -m 755 opence-master /usr/local/bin/
+#   install -m 644 deploy/opence-master.service /etc/systemd/system/
+#   install -d -m 700 /etc/opence-master
+#   cp deploy/master.env.example /etc/opence-master/env   # then fill it in, mode 600
+#   systemctl daemon-reload && systemctl enable --now opence-master
+#   journalctl -u opence-master | grep "public key"   # the key for masters.txt
+#
+# The state (master.db, master.key) is in /var/lib/opence-master; the key is
+# made at the first start. Put Caddy or nginx in front for TLS and keep
+# MASTER_TRUSTED_PROXIES at loopback. Then every local process is the proxy
+# to the master: a request made on the machine directly needs
+# X-Forwarded-Proto: https for what is HTTPS only, and any local process
+# can set X-Forwarded-For (README.md, "Loopback as a trusted proxy").
+[Unit]
+Description=OpenCE master server
+Documentation=https://github.com/OpenCommunityEdition/opence-master-server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=opence-master
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/opence-master
+Environment=MASTER_DB=/var/lib/opence-master/master.db
+Environment=MASTER_KEY=/var/lib/opence-master/master.key
+Environment=MASTER_LISTEN=127.0.0.1:8090
+Environment=MASTER_TRUSTED_PROXIES=127.0.0.1,::1
+EnvironmentFile=/etc/opence-master/env
+ExecStartPre=/usr/local/bin/opence-master keygen --keep --out /var/lib/opence-master/master.key
+ExecStart=/usr/local/bin/opence-master serve
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

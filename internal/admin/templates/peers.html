@@ -1,0 +1,14 @@
+{{define "content"}}
+<div class="panel">
+<h2>Peers</h2>
+<p class="hint">Peer masters share approvals: this master fetches each trusted peer's records every {{.Data.Interval}}.</p>
+{{if .Data.Peers}}
+<table>
+<thead><tr><th>URL</th><th>Key id</th><th>Trusted</th><th>Last fetched</th><th>Last error</th></tr></thead>
+<tbody>
+{{range .Data.Peers}}<tr><td>{{.URL}}</td><td><code>{{.KeyID}}</code></td><td>{{if .Trusted}}yes{{else}}no{{end}}</td><td>{{time .LastOK}}</td><td>{{.LastError}}</td></tr>{{end}}
+</tbody>
+</table>
+{{else}}<p class="muted">No peer is configured (MASTER_PEERS).</p>{{end}}
+</div>
+{{end}}

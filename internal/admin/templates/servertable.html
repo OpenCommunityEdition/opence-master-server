@@ -1,0 +1,26 @@
+{{define "servertable"}}
+{{if .Data.Servers}}
+<table>
+<thead><tr><th>Server</th><th>Publisher</th><th>Instance</th><th>Name</th><th class="num">Players</th><th>Listed</th><th>Probe</th><th>Updated</th><th>Moderation</th></tr></thead>
+<tbody>
+{{range .Data.Servers}}<tr>
+<td><code>{{.Server.ID}}</code></td>
+<td><a href="/admin/publishers/{{.Server.PublisherID}}">{{.Server.PublisherID}}</a></td>
+<td>{{.Server.Instance}}</td>
+<td>{{.Server.Name}}<br><span class="muted">{{.Server.Map}}, {{.Server.Gametype}}</span></td>
+<td class="num">{{.Server.Players}}/{{.Server.MaxPlayers}}</td>
+<td>{{if .Listed}}<span class="ok">listed</span>{{else}}<span class="muted">{{.Why}}</span>{{end}}</td>
+<td>{{.Server.Probe}}</td>
+<td>{{time .Server.Updated}}</td>
+<td><form class="inline" method="post" action="/admin/servers/{{.Server.ID}}/flags">
+<input type="hidden" name="csrf" value="{{$.Data.CSRF}}">
+<label><input type="checkbox" name="hidden" value="1" {{if .Server.Hidden}}checked{{end}}> hidden</label>
+<label><input type="checkbox" name="trusted" value="1" {{if .Server.Trusted}}checked{{end}}> trusted</label>
+<input type="text" name="reason" maxlength="300" placeholder="Reason" value="{{.Server.HiddenReason}}">
+<button class="secondary" type="submit">Set</button>
+</form></td>
+</tr>{{end}}
+</tbody>
+</table>
+{{else}}<p class="muted">None.</p>{{end}}
+{{end}}
