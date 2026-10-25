@@ -28,23 +28,36 @@ One static Go binary (no CGO), one SQLite file. Licence: AGPL-3.0-or-later
 ## Installing
 
 On a Linux server (a small VPS is enough) with a domain whose DNS record
-points at it, and ports 80 and 443 free:
+points at it:
 
 ```sh
 curl -fsSL https://github.com/OpenCommunityEdition/opence-master-server/releases/latest/download/install.sh | sh
 ```
 
-It asks for the domain, installs Docker if it is missing (it asks first),
-sets the master up in `/opt/opence-master` behind Caddy (which gets the
-HTTPS certificate), starts it, and prints a setup link: open it to name the
-master and get its admin token. Then set up the Discord bot on the admin
-pages (["The Discord bot"](#the-discord-bot)). The master updates itself
-from then on (["Updating"](#updating)).
+It asks how HTTPS reaches the master, and for its domain; it installs
+Docker if it is missing (it asks first), sets the master up in
+`/opt/opence-master`, starts it, and prints a setup link: open it to name
+the master and get its admin token. For HTTPS, either:
+
+1. **Caddy in Docker** (the default) gets the certificate itself; it needs
+   ports 80 and 443.
+2. **Your own reverse proxy** on the machine (nginx, Caddy, ...): the
+   master listens on `127.0.0.1:8090` only (`--port` changes it), and the
+   installer prints the proxy's configuration (Caddy's and nginx's, in
+   `/opt/opence-master/reverse-proxy.txt`). The proxy must send
+   `X-Forwarded-Proto`, `X-Forwarded-For` and `X-Forwarded-Host`: without
+   them the master refuses its admin pages and the servers' publishes.
+
+Then set up the Discord bot on the admin pages (["The Discord
+bot"](#the-discord-bot)). The master updates itself from then on
+(["Updating"](#updating)).
 
 To read the script before running it: download it with
-`curl -fsSLO <the same URL>`, then `sh install.sh`. It takes `--domain
-master1.example.org` and `--yes` to ask nothing, and running it again
-repairs an install (or moves it to a new domain) and keeps its data. Without
+`curl -fsSLO <the same URL>`, then `sh install.sh`. To ask nothing, give the
+answers: `sh -s -- --domain master1.example.org --yes`, with `--proxy
+external --port 8090` for your own proxy (`--dir` installs elsewhere than
+`/opt/opence-master`). Running it again repairs an install, moves it to a
+new domain or switches its proxy, and keeps its data and choices. Without
 Docker, see ["Running a master"](#running-a-master) (systemd).
 
 ## Contents

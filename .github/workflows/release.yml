@@ -1,5 +1,5 @@
 # A release: push a version tag (git tag v1.2.0 && git push origin v1.2.0).
-# It builds the binaries (and attaches install.sh, compose.yaml and the
+# It builds the binaries (and attaches install.sh, compose.yaml, compose.proxy.yaml and the
 # Caddyfile, which the installer fetches), signs their SHA256SUMS with the release key (the
 # RELEASE_SIGNING_KEY secret: the masters' updater installs nothing else),
 # pushes the multi-arch image to ghcr.io (latest, 1.2.0 and 1.2), and then
@@ -45,8 +45,8 @@ jobs:
           done
           ./dist/opence-master-linux-amd64 version | grep -q " $GITHUB_REF_NAME "
           # (the installer and the files it fetches)
-          cp install.sh compose.yaml dist/ && cp deploy/Caddyfile dist/Caddyfile
-          (cd dist && sha256sum opence-master-* install.sh compose.yaml Caddyfile > SHA256SUMS)
+          cp install.sh compose.yaml compose.proxy.yaml dist/ && cp deploy/Caddyfile dist/Caddyfile
+          (cd dist && sha256sum opence-master-* install.sh compose.yaml compose.proxy.yaml Caddyfile > SHA256SUMS)
       - name: sign SHA256SUMS
         env:
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
