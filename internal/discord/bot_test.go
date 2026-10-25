@@ -610,7 +610,7 @@ func TestApprove(t *testing.T) {
 	if err != nil || state.Status != model.Approved || state.Quota != h.m.Config.DefaultQuota {
 		t.Fatalf("publisher %v %+v", err, state)
 	}
-	if p := state.Publisher; p.Discord != applicant.Name || p.Email != "" {
+	if p := state.Publisher; p.Discord != applicant.Name || p.DiscordID != applicant.ID || p.Email != "" {
 		t.Fatalf("publisher %+v", p)
 	}
 	entries, _ := h.m.Store.AuditActions("approve", 0, 10)

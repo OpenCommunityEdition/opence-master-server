@@ -219,14 +219,15 @@ func (s *Store) SetApplicationTold(id, status string) error {
 
 func scanPublisher(row scanner) (*model.Publisher, error) {
 	var p model.Publisher
-	err := row.Scan(&p.ID, &p.Name, &p.Email, &p.Discord, &p.Origin, &p.Since, &p.Created, &p.Updated)
+	err := row.Scan(&p.ID, &p.Name, &p.Email, &p.Discord, &p.Origin, &p.Since, &p.Created, &p.Updated,
+		&p.DiscordID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	return &p, err
 }
 
-const publisherColumns = `id, name, email, discord, origin, since, created, updated`
+const publisherColumns = `id, name, email, discord, origin, since, created, updated, discord_id`
 
 // Publisher returns a publisher's record.
 func (s *Store) Publisher(id string) (*model.Publisher, error) {
@@ -253,16 +254,17 @@ func (s *Store) Publishers() ([]model.Publisher, error) {
 
 // PutPublisher inserts a publisher, or updates its name, contact and time.
 func (s *Store) PutPublisher(p *model.Publisher) error {
-	_, err := s.db.Exec(`INSERT INTO publishers (`+publisherColumns+`) VALUES (`+placeholders(8)+`)
+	_, err := s.db.Exec(`INSERT INTO publishers (`+publisherColumns+`) VALUES (`+placeholders(9)+`)
 		ON CONFLICT (id) DO UPDATE SET name = excluded.name, email = excluded.email, discord = excluded.discord,
-		updated = excluded.updated`, p.ID, p.Name, p.Email, p.Discord, p.Origin, p.Since, p.Created, p.Updated)
+		discord_id = excluded.discord_id, updated = excluded.updated`, p.ID, p.Name, p.Email, p.Discord, p.Origin,
+		p.Since, p.Created, p.Updated, p.DiscordID)
 	return err
 }
 
 // InsertPublisherIfAbsent inserts a publisher unless one has its id.
 func (s *Store) InsertPublisherIfAbsent(p *model.Publisher) (bool, error) {
-	result, err := s.db.Exec(`INSERT OR IGNORE INTO publishers (`+publisherColumns+`) VALUES (`+placeholders(8)+`)`,
-		p.ID, p.Name, p.Email, p.Discord, p.Origin, p.Since, p.Created, p.Updated)
+	result, err := s.db.Exec(`INSERT OR IGNORE INTO publishers (`+publisherColumns+`) VALUES (`+placeholders(9)+`)`,
+		p.ID, p.Name, p.Email, p.Discord, p.Origin, p.Since, p.Created, p.Updated, p.DiscordID)
 	if err != nil {
 		return false, err
 	}
@@ -440,8 +442,8 @@ func (s *Store) Approve(a *model.Application, p *model.Publisher, o model.Opinio
 	} else if known > 0 {
 		return ErrKeyExists
 	}
-	if _, err := tx.Exec(`INSERT INTO publishers (`+publisherColumns+`) VALUES (`+placeholders(8)+`)`,
-		p.ID, p.Name, p.Email, p.Discord, p.Origin, p.Since, p.Created, p.Updated); err != nil {
+	if _, err := tx.Exec(`INSERT INTO publishers (`+publisherColumns+`) VALUES (`+placeholders(9)+`)`,
+		p.ID, p.Name, p.Email, p.Discord, p.Origin, p.Since, p.Created, p.Updated, p.DiscordID); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`INSERT INTO opinions (publisher_id, source, status, quota, reason, updated)

@@ -46,7 +46,8 @@ CREATE INDEX IF NOT EXISTS applications_email ON applications(lower(email), crea
 CREATE INDEX IF NOT EXISTS applications_created ON applications(created);
 CREATE TABLE IF NOT EXISTS publishers (
 	id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL DEFAULT '', discord TEXT NOT NULL DEFAULT '',
-	origin TEXT NOT NULL, since INTEGER NOT NULL, created INTEGER NOT NULL, updated INTEGER NOT NULL);
+	origin TEXT NOT NULL, since INTEGER NOT NULL, created INTEGER NOT NULL, updated INTEGER NOT NULL,
+	discord_id TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS opinions (
 	publisher_id TEXT NOT NULL, source TEXT NOT NULL, status TEXT NOT NULL, quota INTEGER NOT NULL,
 	reason TEXT NOT NULL DEFAULT '', updated INTEGER NOT NULL, PRIMARY KEY (publisher_id, source));
@@ -97,6 +98,16 @@ var migrations = []struct{ table, column, declaration string }{
 	{"applications", "log_queued", "INTEGER NOT NULL DEFAULT 0"},
 	{"applications", "told_status", "TEXT NOT NULL DEFAULT ''"},
 	{"servers", "listing_changed", "INTEGER NOT NULL DEFAULT 0"},
+	{"publishers", "discord_id", "TEXT NOT NULL DEFAULT ''"},
+}
+
+// backfills fill a column added by a migration from the records made before
+// it (run once, when the column is added).
+var backfills = map[string]string{
+	// (a publisher's Discord user id is its approved application's)
+	"publishers.discord_id": `UPDATE publishers SET discord_id = COALESCE((SELECT a.discord_id FROM applications a
+		WHERE a.publisher_id = publishers.id AND a.status = 'approved' AND a.discord_id != ''
+		ORDER BY a.updated DESC LIMIT 1), '') WHERE discord_id = ''`,
 }
 
 // Connections is how many connections a database file is opened with:
@@ -147,6 +158,11 @@ func migrate(db *sql.DB) error {
 		if n == 0 {
 			if _, err := db.Exec(`ALTER TABLE ` + m.table + ` ADD COLUMN ` + m.column + ` ` + m.declaration); err != nil {
 				return err
+			}
+			if fill, ok := backfills[m.table+"."+m.column]; ok {
+				if _, err := db.Exec(fill); err != nil {
+					return err
+				}
 			}
 		}
 	}

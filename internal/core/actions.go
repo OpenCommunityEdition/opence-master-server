@@ -79,8 +79,8 @@ func (m *Master) Approve(applicationID string, quota int, actor string) (*model.
 		return nil, refuse("schema", "a quota is 1 to %d", MaximumQuota)
 	}
 	now := m.now()
-	p := &model.Publisher{ID: NewID("p_"), Name: a.Name, Email: a.Email, Discord: a.Discord, Origin: m.KeyID,
-		Since: now, Created: now, Updated: now}
+	p := &model.Publisher{ID: NewID("p_"), Name: a.Name, Email: a.Email, Discord: a.Discord, DiscordID: a.DiscordID,
+		Origin: m.KeyID, Since: now, Created: now, Updated: now}
 	o := model.Opinion{PublisherID: p.ID, Source: m.KeyID, Status: model.Approved, Quota: quota, Updated: now}
 	k := model.KeyRecord{KeyID: a.KeyID, Source: m.KeyID, PublisherID: p.ID, PublicKey: a.PublicKey,
 		Status: model.KeyActive, Updated: now}

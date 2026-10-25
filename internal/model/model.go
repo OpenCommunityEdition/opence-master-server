@@ -71,6 +71,9 @@ type Publisher struct {
 	Name    string `json:"name"`
 	Email   string `json:"email,omitempty"`
 	Discord string `json:"discord,omitempty"`
+	// the Discord user id of the application it was approved from (a
+	// username changes; the id does not)
+	DiscordID string `json:"discord_id,omitempty"`
 	// the master that approved it
 	Origin  string `json:"origin"`
 	Since   int64  `json:"since"`

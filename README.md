@@ -292,7 +292,9 @@ script may send `Authorization: Bearer <token>` instead): applications
 other applications from the same Discord user or for the same key; the
 earlier web form's show their e-mail address and its verification),
 approved or denied there as on Discord, publishers (each master's word on them,
-their keys), servers (`hidden`: listed to nobody, the operator told why at
+their keys, and for one approved from a Discord application, its applicant's
+Discord user id, which a change of username does not change; it is never
+shared with peers nor in `export --public`), servers (`hidden`: listed to nobody, the operator told why at
 each publish; `trusted`: listed without a probe, for a server behind a NAT
 the probe cannot reach; and the disputed listings: publishes refused with
 `listing_taken`, and host keys taken over from a server replaying an old

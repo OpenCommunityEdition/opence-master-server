@@ -281,3 +281,62 @@ func TestSettingsAndSync(t *testing.T) {
 		t.Fatal("a synchronised application is still to sync")
 	}
 }
+
+// A database from before publishers.discord_id: the column is added and
+// filled from each publisher's approved application; the public export
+// leaves it out, and an import refuses one that is not a Discord id.
+func TestPublisherDiscordID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "master.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := s.DB()
+	for _, statement := range []string{
+		`ALTER TABLE publishers DROP COLUMN discord_id`,
+		`INSERT INTO publishers (id, name, discord, origin, since, created, updated)
+			VALUES ('p_1', 'Approved', 'milenko', '0123456789abcdef', 1, 1, 1),
+			('p_2', 'By hand', '', '0123456789abcdef', 1, 1, 1)`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, a := range []model.Application{
+		{ID: "a_1", Name: "Approved", KeyID: "k1", Status: model.ApplicationApproved, PublisherID: "p_1",
+			DiscordID: "200000000000000001", Discord: "milenko", Updated: 2},
+		// (an older denied one for the same publisher id is not its)
+		{ID: "a_0", Name: "Denied", KeyID: "k1", Status: model.ApplicationDenied, PublisherID: "p_1",
+			DiscordID: "200000000000000009", Updated: 1},
+	} {
+		if err := s.CreateApplication(&a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.Close()
+	if s, err = Open(path); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if p, err := s.Publisher("p_1"); err != nil || p.DiscordID != "200000000000000001" || p.Discord != "milenko" {
+		t.Fatalf("not filled in: %v %+v", err, p)
+	}
+	if p, _ := s.Publisher("p_2"); p.DiscordID != "" {
+		t.Fatalf("filled in without an application: %+v", p)
+	}
+	public, err := s.Export("0123456789abcdef", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range public.Publishers {
+		if p.DiscordID != "" || p.Discord != "" {
+			t.Fatalf("the public export holds a Discord identity: %+v", p.Publisher)
+		}
+	}
+	full, _ := s.Export("0123456789abcdef", false)
+	full.Publishers[0].ID, full.Publishers[0].DiscordID = "p_9", "not an id"
+	full.Publishers, full.Applications = full.Publishers[:1], nil
+	if counts, err := s.Import(full, "0123456789abcdef"); err != nil || counts.Refused != 1 || counts.Publishers != 0 {
+		t.Fatalf("a malformed Discord id imported: %v %+v", err, counts)
+	}
+}

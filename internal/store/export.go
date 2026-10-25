@@ -70,7 +70,7 @@ func (s *Store) Export(masterKeyID string, public bool) (*Export, error) {
 	byPublisher := map[string]*ExportedPublisher{}
 	for _, p := range publishers {
 		if public {
-			p.Email, p.Discord = "", ""
+			p.Email, p.Discord, p.DiscordID = "", "", ""
 		}
 		out.Publishers = append(out.Publishers, ExportedPublisher{Publisher: p, Opinions: []model.Opinion{},
 			Keys: []model.KeyRecord{}})
@@ -158,7 +158,8 @@ func (s *Store) Import(e *Export, self string) (ImportCounts, error) {
 	own := e.Master == self
 	for _, p := range e.Publishers {
 		if !publisherIDPattern.MatchString(p.ID) || !keyIDPattern.MatchString(p.Origin) ||
-			!printable(p.Name, 32) || !printable(p.Email, 254) || !printable(p.Discord, 37) {
+			!printable(p.Name, 32) || !printable(p.Email, 254) || !printable(p.Discord, 37) ||
+			!discordIDPattern.MatchString(p.DiscordID) {
 			counts.Refused++
 			continue
 		}

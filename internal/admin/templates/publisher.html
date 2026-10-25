@@ -6,7 +6,7 @@
 <dt>Status</dt><dd>{{if .Status}}{{.Status}}{{else}}no trusted record{{end}}{{if and .StatusBy (ne .StatusBy $.KeyID)}} (set by master <code>{{.StatusBy}}</code>){{end}}</dd>
 <dt>Quota</dt><dd>{{.Quota}}</dd>
 {{if .Publisher.Email}}<dt>E-mail</dt><dd>{{.Publisher.Email}}</dd>{{end}}
-<dt>Discord</dt><dd>{{.Publisher.Discord}}</dd>
+{{if or .Publisher.Discord .Publisher.DiscordID}}<dt>Discord</dt><dd>{{with .Publisher.Discord}}{{.}} {{end}}{{with .Publisher.DiscordID}}<span class="muted">(user id <code>{{.}}</code>, <a href="https://discord.com/users/{{.}}" rel="noopener">profile</a>; the name may have changed since, the id does not)</span>{{end}}</dd>{{end}}
 <dt>Origin</dt><dd><code>{{.Publisher.Origin}}</code>{{if eq .Publisher.Origin $.KeyID}} (this master){{end}}</dd>
 <dt>Since</dt><dd>{{time .Publisher.Since}}</dd>
 </dl>
