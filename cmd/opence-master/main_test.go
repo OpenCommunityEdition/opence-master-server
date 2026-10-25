@@ -6,7 +6,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/OpenCommunityEdition/opence-master-server/internal/config"
+	"github.com/OpenCommunityEdition/opence-master-server/internal/sign"
 )
 
 func TestClientFollowsNoRedirect(t *testing.T) {
@@ -39,5 +45,40 @@ func TestProbeSocket(t *testing.T) {
 	conn.Close()
 	if _, err := probeSocket("no address", log); err == nil {
 		t.Fatal("a bad address taken")
+	}
+}
+
+// A new master makes its key; a database whose key is gone is refused.
+func TestFirstKey(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{Key: filepath.Join(dir, "data", "master.key"), DB: filepath.Join(dir, "data", "master.db")}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if err := firstKey(cfg, log); err != nil {
+		t.Fatal(err)
+	}
+	key, err := sign.LoadSeed(cfg.Key)
+	if err != nil {
+		t.Fatalf("no key made: %v", err)
+	}
+	if info, _ := os.Stat(cfg.Key); info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %v", info.Mode())
+	}
+	// kept at the next start
+	if err := firstKey(cfg, log); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := sign.LoadSeed(cfg.Key); !again.Equal(key) {
+		t.Fatal("the key was replaced")
+	}
+	// a database without its key
+	os.Remove(cfg.Key)
+	os.WriteFile(cfg.DB, []byte("db"), 0o600)
+	if err := firstKey(cfg, log); err == nil || !strings.Contains(err.Error(), "restore the key") {
+		t.Fatalf("a new key for an old database: %v", err)
+	}
+	// a key given as hex makes no file
+	cfg.Key = "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb"
+	if err := firstKey(cfg, log); err != nil {
+		t.Fatal(err)
 	}
 }

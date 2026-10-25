@@ -1,19 +1,22 @@
 # The master behind Caddy, which gets the certificate and terminates TLS.
+# install.sh (README.md, "Installing") sets it up in /opt/opence-master;
+# by hand:
 #
-#   cp deploy/master.env.example master.env    # then fill it in
-#   docker compose run --rm master keygen --out /data/master.key
-#   MASTER_DOMAIN=master1.example.org docker compose up -d
+#   echo MASTER_DOMAIN=master1.example.org > .env
+#   echo MASTER_PUBLIC_URL=https://master1.example.org > master.env
+#   docker compose up -d
 #   docker compose logs master    # the setup link: open it to name the master
 #
-# The master updates itself (the admin pages, or the bot's notice in the
-# applications channel); docker compose pull && docker compose up -d works
-# too.
+# The master makes its key at its first start (back up the master-data
+# volume), and updates itself: the admin pages, or the bot's notice in the
+# applications channel; docker compose pull && docker compose up -d works
+# too. To run an image built from this checkout instead:
+# docker build -t ghcr.io/opencommunityedition/opence-master-server:latest .
 #
 # The master believes X-Forwarded-For and X-Forwarded-Proto only from the
 # compose network's addresses (MASTER_TRUSTED_PROXIES), where Caddy is.
 services:
   master:
-    build: .
     image: ghcr.io/opencommunityedition/opence-master-server:latest
     restart: unless-stopped
     env_file: master.env

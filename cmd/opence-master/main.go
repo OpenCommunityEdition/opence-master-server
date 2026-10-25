@@ -237,6 +237,9 @@ func serve(args []string) error {
 	if err := discord.CheckEnvironment(cfg); err != nil {
 		return usageError{fmt.Errorf("refusing to start:\n%w", err)}
 	}
+	if err := firstKey(cfg, logger(cfg.LogLevel)); err != nil {
+		return err
+	}
 	updater, err := newUpdater(cfg, logger(cfg.LogLevel))
 	if err != nil {
 		return usageError{err}
@@ -414,12 +417,8 @@ func keygen(args []string) error {
 	if _, err := os.Stat(*out); err == nil && !*force {
 		return fmt.Errorf("%s exists; a master's key is its identity (--force replaces it)", *out)
 	}
-	key, err := sign.NewSeed()
+	key, err := writeKey(*out)
 	if err != nil {
-		return err
-	}
-	text := "# OpenCE master key (Ed25519 seed). Keep it secret and backed up.\n" + sign.SeedText(key) + "\n"
-	if err := os.WriteFile(*out, []byte(text), 0o600); err != nil {
 		return err
 	}
 	public := key.Public().(ed25519.PublicKey)
@@ -736,5 +735,40 @@ func updateCommand(args []string) error {
 	}
 	fmt.Printf("installed %s as %s; the master runs it at its next start (systemctl restart opence-master)\n",
 		release.Version, binary)
+	return nil
+}
+
+// writeKey makes a master key and writes it to a new key file.
+func writeKey(path string) (ed25519.PrivateKey, error) {
+	key, err := sign.NewSeed()
+	if err != nil {
+		return nil, err
+	}
+	text := "# OpenCE master key (Ed25519 seed). Keep it secret and backed up.\n" + sign.SeedText(key) + "\n"
+	return key, os.WriteFile(path, []byte(text), 0o600)
+}
+
+// firstKey makes the master key at a new master's first start: when
+// MASTER_KEY is a file that does not exist and neither does the database.
+// A database without its key is refused: the key is the master's identity,
+// which a new one would not be (restore it from the backup).
+func firstKey(cfg *config.Config, log *slog.Logger) error {
+	if _, err := sign.LoadSeed(cfg.Key); err == nil || !errors.Is(err, os.ErrNotExist) {
+		// (a key, or another failure, which open reports)
+		return nil
+	}
+	if _, err := os.Stat(cfg.DB); err == nil {
+		return usageError{fmt.Errorf("the master key %s is missing but the database %s exists: restore the key "+
+			"from its backup (a new key would be another master)", cfg.Key, cfg.DB)}
+	}
+	if err := os.MkdirAll(filepath.Dir(cfg.Key), 0o700); err != nil {
+		return err
+	}
+	key, err := writeKey(cfg.Key)
+	if err != nil {
+		return fmt.Errorf("the master key: %w", err)
+	}
+	log.Warn("made the master key for this new master: back it up, it is the master's identity", "file", cfg.Key,
+		"public_key", sign.PublicKeyText(key.Public().(ed25519.PublicKey)))
 	return nil
 }

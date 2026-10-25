@@ -11,10 +11,12 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: go.mod
+          # the latest patch of go.mod's Go: the standard library's fixes
+          go-version: "1.26.x"
+          check-latest: true
       - name: go vet
         run: go vet ./...
       - name: go test
@@ -23,7 +25,7 @@ jobs:
         run: go test ./internal/vectors
       - name: known vulnerabilities (govulncheck)
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: conformance test (pure-Python Ed25519)
@@ -42,10 +44,12 @@ jobs:
       matrix:
         target: ["linux/amd64", "linux/arm64", "linux/arm/7"]
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: go.mod
+          # the latest patch of go.mod's Go: the standard library's fixes
+          go-version: "1.26.x"
+          check-latest: true
       - name: static binary
         run: |
           IFS=/ read -r os arch arm <<< "${{ matrix.target }}"
@@ -55,16 +59,18 @@ jobs:
   image:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: build the image
         run: docker build --build-arg VERSION=${GITHUB_SHA::12} -t opence-master:ci .
       - name: smoke test the image
         run: |
           docker run --rm opence-master:ci version
-          docker run --rm opence-master:ci serve && exit 1 || test $? -eq 2
-          id=$(docker run -d -e MASTER_NAME=CI -e MASTER_CONTACT=ci@example.org \
-            -e MASTER_KEY=4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb opence-master:ci)
+          docker run --rm opence-master:ci no-such-command && exit 1 || test $? -eq 2
+          # a first start with no settings: it makes its key and prints the setup link
+          id=$(docker run -d opence-master:ci)
           sleep 3
           docker exec "$id" /usr/local/bin/opence-master health
+          docker logs "$id" 2>&1 | grep -q "made the master key"
+          docker logs "$id" 2>&1 | grep -q "/admin/setup?code="
           test "$(docker inspect -f '{{.Config.User}}' opence-master:ci)" = "65532:65532"
           docker rm -f "$id"

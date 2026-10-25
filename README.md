@@ -25,6 +25,28 @@ be an official one.
 One static Go binary (no CGO), one SQLite file. Licence: AGPL-3.0-or-later
 (`LICENSE`): a master is a network service, so its users are owed its source.
 
+## Installing
+
+On a Linux server (a small VPS is enough) with a domain whose DNS record
+points at it, and ports 80 and 443 free:
+
+```sh
+curl -fsSL https://github.com/OpenCommunityEdition/opence-master-server/releases/latest/download/install.sh | sh
+```
+
+It asks for the domain, installs Docker if it is missing (it asks first),
+sets the master up in `/opt/opence-master` behind Caddy (which gets the
+HTTPS certificate), starts it, and prints a setup link: open it to name the
+master and get its admin token. Then set up the Discord bot on the admin
+pages (["The Discord bot"](#the-discord-bot)). The master updates itself
+from then on (["Updating"](#updating)).
+
+To read the script before running it: download it with
+`curl -fsSLO <the same URL>`, then `sh install.sh`. It takes `--domain
+master1.example.org` and `--yes` to ask nothing, and running it again
+repairs an install (or moves it to a new domain) and keeps its data. Without
+Docker, see ["Running a master"](#running-a-master) (systemd).
+
 ## Contents
 
 | Path | What |
@@ -44,6 +66,7 @@ One static Go binary (no CGO), one SQLite file. Licence: AGPL-3.0-or-later
 | `cmd/release-sign` | Signs a release's `SHA256SUMS` with the release key (the release workflow) |
 | `internal/vectors` | Makes `testdata/vectors.json` (`go test ./internal/vectors -update`) |
 | `tests/conformance` | `test_master_protocol.py` and the reference publisher `opence_publisher.py` |
+| `install.sh` | The installer: Docker, Compose with Caddy, the setup link |
 | `Dockerfile`, `compose.yaml`, `deploy/` | The image, Compose with Caddy for TLS, the systemd unit |
 
 ## Building and testing
@@ -114,11 +137,14 @@ network, as `compose.yaml` does) and trust only that one.
   `StateDirectory=opence-master`; the key is made at the first start and
   its public half is in the journal). The settings go in
   `/etc/opence-master/env` (`deploy/master.env.example`).
-- **Docker**: `compose.yaml` runs the master and Caddy:
-  `cp deploy/master.env.example master.env`, set its public URL, then
-  `docker compose run --rm master keygen --out /data/master.key` and
-  `MASTER_DOMAIN=master1.example.org docker compose up -d`. The image is
-  distroless, runs as a non-root user, and keeps everything in `/data`.
+- **Docker**: `install.sh` (["Installing"](#installing)) does it; by hand,
+  `compose.yaml` runs the master and Caddy:
+  `echo MASTER_DOMAIN=master1.example.org > .env`, `echo
+  MASTER_PUBLIC_URL=https://master1.example.org > master.env`, then
+  `docker compose up -d`. The master makes its key at its first start (a
+  new database without a key file); back up the `master-data` volume. The
+  image is distroless, runs as a non-root user, and keeps everything in
+  `/data`.
 
 ### The Discord bot
 
