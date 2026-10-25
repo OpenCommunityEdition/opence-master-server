@@ -3,9 +3,7 @@
 package web
 
 import (
-	"bytes"
-	"embed"
-	"html/template"
+	_ "embed"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -16,26 +14,14 @@ import (
 	"github.com/OpenCommunityEdition/opence-master-server/internal/httpx"
 	"github.com/OpenCommunityEdition/opence-master-server/internal/limit"
 	"github.com/OpenCommunityEdition/opence-master-server/internal/netaddr"
+	"github.com/OpenCommunityEdition/opence-master-server/internal/view"
 )
 
-//go:embed templates/*.html
-var templateFiles embed.FS
-
+// Style is the pages' stylesheet (tools/generate.sh writes it from
+// internal/view/style.css).
+//
 //go:embed static/style.css
 var Style []byte
-
-// Page is what every page's layout reads.
-type Page struct {
-	Title    string
-	Master   string
-	Contact  string
-	Policy   string
-	KeyID    string
-	Version  string
-	Protocol int
-	Admin    bool
-	Data     any
-}
 
 // Message is a page of a heading and lines.
 type Message struct {
@@ -47,7 +33,6 @@ type Message struct {
 type Pages struct {
 	M       *core.Master
 	Clients *httpx.Clients
-	pages   map[string]*template.Template
 	// the list page's requests, MASTER_LIST_RATE a minute per address (the
 	// API's list limiter, shared, when the command sets it)
 	Lists *limit.Limiter
@@ -63,26 +48,9 @@ type Applying interface {
 	Accepting() bool
 }
 
-// Parse makes a page's template set from the layout and the page.
-func Parse(files embed.FS, layout string, names ...string) (map[string]*template.Template, error) {
-	out := map[string]*template.Template{}
-	for _, name := range names {
-		t, err := template.New(name).Funcs(Funcs).ParseFS(files, layout, "templates/"+name+".html")
-		if err != nil {
-			return nil, err
-		}
-		out[name] = t
-	}
-	return out, nil
-}
-
 // New makes the pages.
 func New(m *core.Master, clients *httpx.Clients) (*Pages, error) {
-	pages, err := Parse(templateFiles, "templates/layout.html", "index", "apply", "message")
-	if err != nil {
-		return nil, err
-	}
-	return &Pages{M: m, Clients: clients, pages: pages,
+	return &Pages{M: m, Clients: clients,
 		Lists: limit.PerMinute(m.Config.ListPerMinute, func() time.Time { return m.Now() }).Grouped(netaddr.Group)}, nil
 }
 
@@ -97,73 +65,39 @@ func (p *Pages) Routes(mux *http.ServeMux) {
 	})
 }
 
-// PageFor fills a page's common fields.
-func PageFor(m *core.Master, title string, data any) Page {
-	return Page{Title: title, Master: m.Name(), Contact: m.Contact(), Policy: m.Config.DataPolicy,
-		KeyID: m.KeyID, Version: core.Version, Protocol: core.Protocol, Admin: true, Data: data}
-}
-
-// Render writes a page.
-func Render(w http.ResponseWriter, t *template.Template, status int, page Page) {
-	var buffer bytes.Buffer
-	if err := t.ExecuteTemplate(&buffer, "layout", page); err != nil {
-		http.Error(w, "the page failed", http.StatusInternalServerError)
-		return
-	}
-	httpx.Secure(w)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(status)
-	_, _ = w.Write(buffer.Bytes())
-}
-
-// Funcs are the templates' helpers.
-var Funcs = template.FuncMap{
-	"since": core.Since,
-	"time": func(unix int64) string {
-		if unix == 0 {
-			return "never"
-		}
-		return timeText(unix)
-	},
-	"short": func(text string, n int) string {
-		if len(text) > n {
-			return text[:n] + "..."
-		}
-		return text
-	},
-}
-
-func (p *Pages) message(w http.ResponseWriter, status int, title string, m Message) {
-	Render(w, p.pages["message"], status, PageFor(p.M, title, m))
+func (p *Pages) message(w http.ResponseWriter, r *http.Request, status int, title string, m Message) {
+	view.Render(w, r, status, messagePage(view.For(p.M, title), m))
 }
 
 func (p *Pages) index(w http.ResponseWriter, r *http.Request) {
 	if allowed, wait := p.Lists.Allow(p.Clients.Of(r).Key()); !allowed {
 		w.Header().Set("Retry-After", strconv.Itoa(int(wait/time.Second)+1))
-		p.message(w, http.StatusTooManyRequests, "Too many requests", Message{Heading: "Too many requests",
+		p.message(w, r, http.StatusTooManyRequests, "Too many requests", Message{Heading: "Too many requests",
 			Lines: []string{"Wait a few seconds and reload the page."}})
 		return
 	}
 	entries, err := p.M.Listed(core.Filter{})
 	if err != nil {
-		p.message(w, http.StatusInternalServerError, "Error", Message{Heading: "The list failed"})
+		p.message(w, r, http.StatusInternalServerError, "Error", Message{Heading: "The list failed"})
 		return
 	}
 	players := 0
 	for _, e := range entries {
 		players += e.Players
 	}
-	Render(w, p.pages["index"], http.StatusOK, PageFor(p.M, "Servers", map[string]any{
-		"Servers": entries, "Players": players}))
+	page := view.For(p.M, "Servers")
+	page.Section = "servers"
+	view.Render(w, r, http.StatusOK, indexPage(page, entries, players))
 }
 
 func (p *Pages) apply(w http.ResponseWriter, r *http.Request) {
-	data := map[string]any{"RequireProof": p.M.Config.RequireProof}
+	invite, accepting := "", false
 	if p.Applying != nil {
-		data["Invite"], data["Accepting"] = p.Applying.InviteURL(), p.Applying.Accepting()
+		invite, accepting = p.Applying.InviteURL(), p.Applying.Accepting()
 	}
-	Render(w, p.pages["apply"], http.StatusOK, PageFor(p.M, "Apply", data))
+	page := view.For(p.M, "Apply")
+	page.Section = "apply"
+	view.Render(w, r, http.StatusOK, applyPage(page, invite, p.M.Config.RequireProof, accepting))
 }
 
 // SameOrigin tells whether a form post's Origin (when sent) is this page's:
@@ -185,4 +119,12 @@ func SameOrigin(r *http.Request, clients *httpx.Clients) bool {
 		return false
 	}
 	return strings.EqualFold(u.Host, clients.Host(r))
+}
+
+// optional is the apply page's note that a proof of key may be left out.
+func optional(yes bool) string {
+	if yes {
+		return " (optional on this master)"
+	}
+	return ""
 }

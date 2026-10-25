@@ -1,0 +1,1005 @@
+package admin
+
+import (
+	"strconv"
+
+	"github.com/OpenCommunityEdition/opence-master-server/internal/core"
+	"github.com/OpenCommunityEdition/opence-master-server/internal/discord"
+	"github.com/OpenCommunityEdition/opence-master-server/internal/model"
+	"github.com/OpenCommunityEdition/opence-master-server/internal/update"
+	"github.com/OpenCommunityEdition/opence-master-server/internal/view"
+)
+
+// the navigation's sections: their path and name
+var sections = []struct{ id, path, name string }{
+	{"applications", "/admin/applications", "Applications"},
+	{"publishers", "/admin/publishers", "Publishers"},
+	{"servers", "/admin/servers", "Servers"},
+	{"peers", "/admin/peers", "Peers"},
+	{"discord", "/admin/discord", "Discord"},
+	{"settings", "/admin/settings", "Settings"},
+	{"audit", "/admin/audit", "Audit log"},
+}
+
+// brand is the master's mark and name.
+templ brand(p view.Page) {
+	<a href="/admin/" class="flex items-center gap-2.5 font-semibold tracking-tight">
+		<span class="grid size-7 place-items-center rounded-md bg-fg text-[0.6875rem] font-bold text-canvas">CE</span>
+		<h1 class="text-base">{ p.Master }</h1>
+		<span class={ view.ToneClass(view.Neutral) }>admin</span>
+	</a>
+}
+
+// alerts are the page's messages: a newer release, and an action's outcome.
+templ alerts(p view.Page) {
+	if p.UpdateBanner != "" {
+		@view.Alert(view.Info) {
+			Release { p.UpdateBanner } is out: <a href="/admin/settings#updates">update</a>.
+		}
+	}
+	if p.Notice != "" {
+		@view.Alert(view.OK) {
+			{ p.Notice }
+		}
+	}
+	if p.Error != "" {
+		@view.Alert(view.Bad) {
+			{ p.Error }
+		}
+	}
+}
+
+// layout is the admin pages' frame: the header with the navigation (once
+// logged in), the messages, the page.
+templ layout(p view.Page) {
+	@view.Document(p.Title + " - " + p.Master + " admin") {
+		<header class="sticky top-0 z-10 border-b border-line bg-canvas/80 backdrop-blur">
+			<div class="mx-auto flex max-w-6xl flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3">
+				@brand(p)
+				if p.Signed {
+					<nav class="order-last -mx-1 flex w-full gap-1 overflow-x-auto lg:order-none lg:w-auto">
+						for _, s := range sections {
+							<a
+								href={ templ.URL(s.path) }
+								class={ "shrink-0 rounded-md px-3 py-1.5 text-sm transition",
+									templ.KV("bg-fg/10 font-medium text-fg", p.Section == s.id),
+									templ.KV("text-muted hover:bg-fg/5 hover:text-fg", p.Section != s.id) }
+								if p.Section == s.id {
+									aria-current="page"
+								}
+							>{ s.name }</a>
+						}
+					</nav>
+					<div class="ml-auto flex items-center gap-3">
+						<a href="/" class="text-sm text-muted transition hover:text-fg">Public list</a>
+						<form method="post" action="/admin/logout">
+							@view.CSRF(p.CSRF)
+							<button class={ view.ButtonSecondary + view.ButtonSmall } type="submit">Log out</button>
+						</form>
+					</div>
+				}
+			</div>
+		</header>
+		<main class="mx-auto max-w-6xl space-y-6 px-4 py-8">
+			@alerts(p)
+			{ children... }
+		</main>
+		<footer class="mx-auto max-w-6xl px-4 pb-8 text-xs text-muted">
+			<p class="border-t border-line pt-6">Master key id <code>{ p.KeyID }</code>. opence-master { p.Version }, protocol { strconv.Itoa(p.Protocol) }. Every action here is written to the audit log.</p>
+		</footer>
+	}
+}
+
+// narrow is a page of one card in the middle (log in, set up).
+templ narrow(p view.Page) {
+	@view.Document(p.Title + " - " + p.Master + " admin") {
+		<main class="flex min-h-screen flex-col items-center justify-center gap-6 px-4 py-12">
+			<div class="flex items-center gap-2.5 font-semibold tracking-tight">
+				<span class="grid size-8 place-items-center rounded-md bg-fg text-xs font-bold text-canvas">CE</span>
+				<h1 class="text-lg">{ p.Master }</h1>
+			</div>
+			<div class="w-full max-w-md space-y-4">
+				@alerts(p)
+				@view.Card() {
+					{ children... }
+				}
+			</div>
+			<p class="text-xs text-muted">opence-master { p.Version }</p>
+		</main>
+	}
+}
+
+// heading is a page's title, a line under it, and its actions (children).
+templ heading(title, description string) {
+	<div class="flex flex-wrap items-end justify-between gap-4">
+		<div>
+			<h2 class="text-2xl">{ title }</h2>
+			if description != "" {
+				<p class="mt-1 max-w-3xl text-sm text-muted">{ description }</p>
+			}
+		</div>
+		{ children... }
+	</div>
+}
+
+// ---------- logging in, setting up
+templ loginPage(p view.Page) {
+	@narrow(p) {
+		@view.CardHeader("Log in", "The admin pages of this master.")
+		<form method="post" action="/admin/login" class="space-y-4">
+			@view.FormField("token", "Admin token", "The token the setup showed, or MASTER_ADMIN_TOKEN when that is set.") {
+				<input type="password" id="token" name="token" required autocomplete="current-password" class={ view.Input }/>
+			}
+			<button type="submit" class={ view.ButtonPrimary + " w-full" }>Log in</button>
+		</form>
+	}
+}
+
+// profileFields are the master's name and contact.
+templ profileFields(d profile) {
+	@view.FormField("name", "Name", envNote(d.FromEnv["name"], "MASTER_NAME")+"Shown in the master's list, its pages and the Discord bot's messages.") {
+		<input type="text" id="name" name="name" maxlength="64" required value={ d.Name } disabled?={ d.FromEnv["name"] } class={ view.Input }/>
+	}
+	@view.FormField("contact", "Contact (optional)", envNote(d.FromEnv["contact"], "MASTER_CONTACT")+"Who answers for this master: an e-mail address or a URL, shown on its pages and told to denied applicants.") {
+		<input type="text" id="contact" name="contact" maxlength="200" placeholder="admin@example.org or https://..." value={ d.Contact } disabled?={ d.FromEnv["contact"] } class={ view.Input }/>
+	}
+}
+
+templ setupPage(p view.Page, d setupView) {
+	@narrow(p) {
+		if d.Token != "" {
+			@view.CardHeader("The master is set up", "")
+			<div class="space-y-4 text-sm">
+				<p>This is the admin token. Keep it somewhere safe (a password manager): you log in with it, and it is <strong>never shown again</strong>.</p>
+				<code class="token">{ d.Token }</code>
+				@view.Hint() {
+					Lost, it is replaced by setting MASTER_ADMIN_TOKEN, which then wins.
+				}
+				<a class={ view.ButtonPrimary + " w-full" } href="/admin/discord">Continue: set up the Discord bot</a>
+			</div>
+		} else if d.Code != "" {
+			@view.CardHeader("Set up this master", "Name it, and get its admin token.")
+			<form method="post" action="/admin/setup" class="space-y-4">
+				<input type="hidden" name="code" value={ d.Code }/>
+				@profileFields(d.profile)
+				<button type="submit" class={ view.ButtonPrimary + " w-full" }>Save and make the admin token</button>
+			</form>
+		} else {
+			@view.CardHeader("Set up this master", "")
+			<p class="text-sm leading-relaxed text-muted">This master is not set up yet. Its log holds the setup link (<code>docker compose logs master</code>, or <code>journalctl -u opence-master</code>): open it. A new link is printed at each start until the setup is done.</p>
+		}
+	}
+}
+
+// ---------- settings
+templ settingsPage(p view.Page, d profile, updates *update.Status) {
+	@layout(p) {
+		@heading("Settings", "")
+		@view.Card() {
+			@view.CardHeader("Master", "Its name and contact, on every page.")
+			<form method="post" action="/admin/settings" class="max-w-xl space-y-4">
+				@view.CSRF(p.CSRF)
+				@profileFields(d)
+				<button type="submit" class={ view.ButtonPrimary }>Save</button>
+			</form>
+		}
+		if updates != nil {
+			<div id="updates">
+				@view.Card() {
+					<div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+						<h2>Updates</h2>
+						if updates.Updating {
+							@view.Badge(view.Warn, "updating")
+						} else if updates.Available {
+							@view.Badge(view.Info, "update available")
+						} else if updates.Latest != nil {
+							@view.Badge(view.OK, "up to date")
+						}
+					</div>
+					@view.Fields() {
+						@view.Field("Running") {
+							<code>{ updates.Current }</code>
+						}
+						@view.Field("Latest release") {
+							if updates.Latest != nil {
+								<a href={ templ.URL(updates.Latest.URL) } rel="noopener">{ updates.Latest.Version }</a>
+							} else {
+								<span class="text-muted">not checked yet</span>
+							}
+							if !updates.Checked.IsZero() {
+								<span class="text-muted">checked { view.Time(updates.Checked.Unix()) }</span>
+							}
+						}
+						@view.Field("Mode") {
+							{ updates.Mode } <span class="text-muted">(MASTER_UPDATES: notify, auto or off)</span>
+						}
+						if updates.Error != "" {
+							@view.Field("Last failure") {
+								<span class="text-bad">{ updates.Error }</span>
+							}
+						}
+					}
+					if updates.Updating {
+						<div class="mt-5">
+							@view.Alert(view.Warn) {
+								Updating: the master restarts on its own in a moment.
+							}
+						</div>
+					} else if updates.Available {
+						<p class="mt-5 max-w-3xl text-sm text-muted">Release { updates.Latest.Version } is out. Updating downloads it, checks its signature, and restarts the master into it without dropping its connections; the database is backed up first.</p>
+					}
+					<div class="mt-5 flex flex-wrap gap-2">
+						if updates.Available && !updates.Updating {
+							<form method="post" action="/admin/update/start">
+								@view.CSRF(p.CSRF)
+								<button type="submit" class={ view.ButtonPrimary }>Update to { updates.Latest.Version }</button>
+							</form>
+						}
+						<form method="post" action="/admin/update/check">
+							@view.CSRF(p.CSRF)
+							<button class={ view.ButtonSecondary } type="submit">Check now</button>
+						</form>
+					</div>
+				}
+			</div>
+		}
+	}
+}
+
+// ---------- applications
+
+// applicant is who sent an application.
+templ applicant(a *model.Application) {
+	if a.DiscordID != "" {
+		{ a.Discord } <span class="text-muted">(Discord)</span>
+	} else if a.Email != "" {
+		{ a.Email }
+		if a.EmailVerified {
+			@view.Badge(view.OK, "verified")
+		} else {
+			@view.Badge(view.Warn, "not verified")
+		}
+	} else {
+		<span class="text-muted">command line</span>
+	}
+}
+
+// proof is whether an application proved its key.
+templ proof(ok bool, yes string) {
+	if ok {
+		@view.Badge(view.OK, yes)
+	} else {
+		@view.Badge(view.Bad, "NO PROOF")
+	}
+}
+
+// tab is one of a page's filters.
+templ tab(href, text string, current bool) {
+	<a
+		href={ templ.URL(href) }
+		class={ "rounded-md px-3 py-1 text-sm transition", templ.KV("bg-surface font-medium text-fg shadow-sm", current),
+			templ.KV("text-muted hover:text-fg", !current) }
+	>{ text }</a>
+}
+
+templ applicationsPage(p view.Page, list []model.Application, all bool) {
+	@layout(p) {
+		@heading("Applications", "Operators' applications, from the Discord bot or the command line.") {
+			<div class="flex gap-1 rounded-lg border border-line bg-fg/5 p-1">
+				@tab("/admin/applications", "Pending", !all)
+				@tab("/admin/applications?status=all", "All", all)
+			</div>
+		}
+		@view.Card() {
+			if len(list) == 0 {
+				@view.Empty("None.")
+			} else {
+				<div class={ view.TableWrap }>
+					<table class={ view.Table }>
+						<thead>
+							<tr>
+								<th class={ view.Th }>Application</th>
+								<th class={ view.Th }>Name</th>
+								<th class={ view.Th }>Key id</th>
+								<th class={ view.ThNum }>Servers</th>
+								<th class={ view.Th }>Applicant</th>
+								<th class={ view.Th }>Proof</th>
+								<th class={ view.Th }>Status</th>
+								<th class={ view.Th }>Applied</th>
+							</tr>
+						</thead>
+						<tbody>
+							for i := range list {
+								<tr class={ view.Tr }>
+									<td class={ view.Td }><a class={ view.Link + " font-medium" } href={ templ.URL("/admin/applications/" + list[i].ID) }>{ list[i].ID }</a></td>
+									<td class={ view.Td }>{ list[i].Name }</td>
+									<td class={ view.Td }><code class="whitespace-nowrap">{ list[i].KeyID }</code></td>
+									<td class={ view.TdNum }>{ strconv.Itoa(list[i].Servers) }</td>
+									<td class={ view.Td }>
+										@applicant(&list[i])
+									</td>
+									<td class={ view.Td }>
+										@proof(list[i].ProofOK, "yes")
+									</td>
+									<td class={ view.Td }>
+										@view.StatusBadge(list[i].Status)
+									</td>
+									<td class={ view.Td + " whitespace-nowrap text-muted" }>{ view.Time(list[i].Created) }</td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				</div>
+			}
+		}
+	}
+}
+
+templ applicationPage(p view.Page, a *model.Application, related []model.Application, defaultQuota int) {
+	@layout(p) {
+		@heading("Application "+a.ID, a.Name) {
+			@view.StatusBadge(a.Status)
+		}
+		if !a.ProofOK {
+			@view.Alert(view.Bad) {
+				<strong>No proof of key.</strong> Nothing shows that the applicant holds this key's private half: anyone may have applied with a key copied from someone else (a server's log, a master's records), to be approved in its holder's name or to block it. Ask the operator to apply again with <code>halo --server --sign</code>'s proof (the bot's <code>/apply</code> gives the nonce), or confirm the key with them some other way, before approving.
+			}
+		}
+		<div class="grid items-start gap-6 lg:grid-cols-[1fr_22rem]">
+			@view.Card() {
+				@view.Fields() {
+					@view.Field("Status") {
+						{ a.Status }
+						if a.Reason != "" {
+							: { a.Reason }
+						}
+						if a.PublisherID != "" {
+							(publisher <a href={ templ.URL("/admin/publishers/" + a.PublisherID) }>{ a.PublisherID }</a>)
+						}
+						if a.DecidedBy != "" {
+							<span class="text-muted">by { a.DecidedBy }, { view.Time(a.Updated) }</span>
+						}
+					}
+					@view.Field("Name") {
+						{ a.Name }
+					}
+					@view.Field("Applicant") {
+						if a.DiscordID != "" {
+							Discord: { a.Discord } <span class="text-muted">(user id <code>{ a.DiscordID }</code>)</span>
+						} else if a.Email != "" {
+							the web form
+						} else {
+							added on the command line
+						}
+					}
+					if a.Email != "" {
+						@view.Field("E-mail") {
+							{ a.Email }
+							if a.EmailVerified {
+								@view.Badge(view.OK, "verified")
+							} else {
+								@view.Badge(view.Warn, "not verified")
+							}
+						}
+					}
+					if a.Discord != "" && a.DiscordID == "" {
+						@view.Field("Discord") {
+							{ a.Discord }
+						}
+					}
+					@view.Field("Public key") {
+						<code>{ a.PublicKey }</code>
+					}
+					@view.Field("Key id") {
+						<code>{ a.KeyID }</code>
+					}
+					@view.Field("Proof of key") {
+						@proof(a.ProofOK, "verified")
+					}
+					@view.Field("Servers") {
+						{ strconv.Itoa(a.Servers) }
+					}
+					@view.Field("Region") {
+						{ a.Region }
+					}
+					@view.Field("Note") {
+						<span class="whitespace-pre-line">{ a.Note }</span>
+					}
+					@view.Field("Applied") {
+						{ view.Time(a.Created) }
+					}
+					@view.Field("Log channel") {
+						if a.LogMessage != "" {
+							posted (message <code>{ a.LogMessage }</code>)
+						} else if a.LogQueued {
+							waiting for the bot
+						} else {
+							not posted
+						}
+					}
+				}
+			}
+			if a.Status == model.ApplicationPending {
+				<div class="space-y-6">
+					@view.Card() {
+						@view.CardHeader("Approve", "A publisher, with this key, listed at its next publish.")
+						<form method="post" action={ templ.URL("/admin/applications/" + a.ID + "/approve") } class="space-y-4">
+							@view.CSRF(p.CSRF)
+							@view.FormField("quota", "Quota", "Servers at once.") {
+								<input type="number" id="quota" name="quota" min="1" max="1000" value={ strconv.Itoa(defaultQuota) } class={ view.Input }/>
+							}
+							<button type="submit" class={ view.ButtonPrimary + " w-full" }>Approve</button>
+						</form>
+					}
+					@view.Card() {
+						@view.CardHeader("Deny", "The applicant is told the reason.")
+						<form method="post" action={ templ.URL("/admin/applications/" + a.ID + "/deny") } class="space-y-4">
+							@view.CSRF(p.CSRF)
+							@view.FormField("reason", "Reason", "300 characters at most.") {
+								<input type="text" id="reason" name="reason" required maxlength="300" placeholder="Reason, told to the operator" class={ view.Input }/>
+							}
+							<button class={ view.ButtonDanger + " w-full" } type="submit">Deny</button>
+						</form>
+					}
+				</div>
+			}
+		</div>
+		@view.Card() {
+			@view.CardHeader("Related applications", "Other applications from the same Discord user or with the same key (and, for the web form's, from the same address or e-mail address).")
+			if len(related) == 0 {
+				@view.Empty("None.")
+			} else {
+				<div class={ view.TableWrap }>
+					<table class={ view.Table }>
+						<tbody>
+							for i := range related {
+								<tr class={ view.Tr }>
+									<td class={ view.Td }><a class={ view.Link } href={ templ.URL("/admin/applications/" + related[i].ID) }>{ related[i].ID }</a></td>
+									<td class={ view.Td }>{ related[i].Name }</td>
+									<td class={ view.Td }>
+										if related[i].DiscordID != "" {
+											{ related[i].Discord }
+										} else {
+											{ related[i].Email }
+										}
+									</td>
+									<td class={ view.Td }><code class="whitespace-nowrap">{ related[i].KeyID }</code></td>
+									<td class={ view.Td }>
+										@view.StatusBadge(related[i].Status)
+									</td>
+									<td class={ view.Td + " text-muted" }>{ view.Time(related[i].Created) }</td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				</div>
+			}
+		}
+	}
+}
+
+// ---------- publishers
+
+// publisherStatus is a publisher's effective status.
+templ publisherStatus(status string) {
+	if status == "" {
+		<span class="text-muted">no trusted record</span>
+	} else {
+		@view.StatusBadge(status)
+	}
+}
+
+// origin is the master a record came from.
+templ origin(source, self string) {
+	<code>{ source }</code>
+	if source == self {
+		<span class="text-muted">(here)</span>
+	}
+}
+
+templ publishersPage(p view.Page, states []*core.PublisherState) {
+	@layout(p) {
+		@heading("Publishers", "The approved operators, and each master's word on them.")
+		@view.Card() {
+			if len(states) == 0 {
+				@view.Empty("None yet.")
+			} else {
+				<div class={ view.TableWrap }>
+					<table class={ view.Table }>
+						<thead>
+							<tr>
+								<th class={ view.Th }>Publisher</th>
+								<th class={ view.Th }>Name</th>
+								<th class={ view.Th }>Status</th>
+								<th class={ view.ThNum }>Quota</th>
+								<th class={ view.ThNum }>Keys</th>
+								<th class={ view.Th }>Origin</th>
+								<th class={ view.Th }>Since</th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, s := range states {
+								<tr class={ view.Tr }>
+									<td class={ view.Td }><a class={ view.Link + " font-medium" } href={ templ.URL("/admin/publishers/" + s.Publisher.ID) }>{ s.Publisher.ID }</a></td>
+									<td class={ view.Td }>{ s.Publisher.Name }</td>
+									<td class={ view.Td }>
+										@publisherStatus(s.Status)
+									</td>
+									<td class={ view.TdNum }>{ strconv.Itoa(s.Quota) }</td>
+									<td class={ view.TdNum }>{ strconv.Itoa(len(s.Keys)) }</td>
+									<td class={ view.Td }>
+										@origin(s.Publisher.Origin, p.KeyID)
+									</td>
+									<td class={ view.Td + " text-muted" }>{ view.Since(s.Publisher.Since) }</td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				</div>
+			}
+		}
+	}
+}
+
+templ publisherPage(p view.Page, s *core.PublisherState, rows []ServerRow) {
+	@layout(p) {
+		@heading(s.Publisher.Name, s.Publisher.ID) {
+			@publisherStatus(s.Status)
+		}
+		<div class="grid items-start gap-6 lg:grid-cols-[1fr_22rem]">
+			@view.Card() {
+				@view.Fields() {
+					@view.Field("Status") {
+						@publisherStatus(s.Status)
+						if s.StatusBy != "" && s.StatusBy != p.KeyID {
+							<span class="text-muted">(set by master <code>{ s.StatusBy }</code>)</span>
+						}
+					}
+					@view.Field("Quota") {
+						{ strconv.Itoa(s.Quota) }
+					}
+					if s.Publisher.Email != "" {
+						@view.Field("E-mail") {
+							{ s.Publisher.Email }
+						}
+					}
+					if s.Publisher.Discord != "" || s.Publisher.DiscordID != "" {
+						@view.Field("Discord") {
+							if s.Publisher.Discord != "" {
+								{ s.Publisher.Discord }
+							}
+							if s.Publisher.DiscordID != "" {
+								<span class="text-muted">(user id <code>{ s.Publisher.DiscordID }</code>, <a href={ templ.URL("https://discord.com/users/" + s.Publisher.DiscordID) } rel="noopener">profile</a>; the name may have changed since, the id does not)</span>
+							}
+						}
+					}
+					@view.Field("Origin") {
+						<code>{ s.Publisher.Origin }</code>
+						if s.Publisher.Origin == p.KeyID {
+							(this master)
+						}
+					}
+					@view.Field("Since") {
+						{ view.Time(s.Publisher.Since) }
+					}
+				}
+			}
+			<div class="space-y-6">
+				@view.Card() {
+					@view.CardHeader("Status", "Suspended: its servers are unlisted at once. Revoked: for good.")
+					<form method="post" action={ templ.URL("/admin/publishers/" + s.Publisher.ID + "/status") } class="space-y-3">
+						@view.CSRF(p.CSRF)
+						<input type="text" name="reason" maxlength="300" placeholder="Reason" aria-label="Reason" class={ view.Input }/>
+						<div class="flex flex-wrap gap-2">
+							<button class={ view.ButtonDanger } type="submit" name="status" value="suspended">Suspend</button>
+							<button class={ view.ButtonSecondary } type="submit" name="status" value="approved">Resume</button>
+							<button class={ view.ButtonDanger } type="submit" name="status" value="revoked">Revoke for good</button>
+						</div>
+					</form>
+				}
+				@view.Card() {
+					@view.CardHeader("Quota", "Servers at once.")
+					<form method="post" action={ templ.URL("/admin/publishers/" + s.Publisher.ID + "/quota") } class="flex gap-2">
+						@view.CSRF(p.CSRF)
+						<input type="number" name="quota" min="1" max="1000" value={ strconv.Itoa(s.Quota) } aria-label="Quota" class={ view.Input }/>
+						<button class={ view.ButtonSecondary } type="submit">Set quota</button>
+					</form>
+				}
+			</div>
+		</div>
+		@view.Card() {
+			@view.CardHeader("Each master's word", "The most restrictive status among this master and its trusted peers is the publisher's.")
+			<div class={ view.TableWrap }>
+				<table class={ view.Table }>
+					<thead>
+						<tr>
+							<th class={ view.Th }>Master</th>
+							<th class={ view.Th }>Status</th>
+							<th class={ view.ThNum }>Quota</th>
+							<th class={ view.Th }>Reason</th>
+							<th class={ view.Th }>Updated</th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, o := range s.Opinions {
+							<tr class={ view.Tr }>
+								<td class={ view.Td }>
+									@origin(o.Source, p.KeyID)
+								</td>
+								<td class={ view.Td }>
+									@view.StatusBadge(o.Status)
+								</td>
+								<td class={ view.TdNum }>{ strconv.Itoa(o.Quota) }</td>
+								<td class={ view.Td }>{ o.Reason }</td>
+								<td class={ view.Td + " text-muted" }>{ view.Time(o.Updated) }</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			</div>
+		}
+		@view.Card() {
+			@view.CardHeader("Keys", "")
+			<div class={ view.TableWrap }>
+				<table class={ view.Table }>
+					<thead>
+						<tr>
+							<th class={ view.Th }>Key id</th>
+							<th class={ view.Th }>Public key</th>
+							<th class={ view.Th }>Status</th>
+							<th class={ view.Th }>Last used</th>
+							<th class={ view.Th }><span class="sr-only">Revoke</span></th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, k := range s.Keys {
+							<tr class={ view.Tr }>
+								<td class={ view.Td }><code class="whitespace-nowrap">{ k.KeyID }</code></td>
+								<td class={ view.Td }><code>{ k.PublicKey }</code></td>
+								<td class={ view.Td }>
+									@view.StatusBadge(k.Status)
+								</td>
+								<td class={ view.Td + " whitespace-nowrap text-muted" }>{ view.Time(k.LastUsed) }</td>
+								<td class={ view.Td }>
+									if k.Status == "active" {
+										<form method="post" action={ templ.URL("/admin/keys/" + k.KeyID + "/revoke") } class="flex justify-end gap-2">
+											@view.CSRF(p.CSRF)
+											<input type="hidden" name="publisher" value={ s.Publisher.ID }/>
+											<input type="text" name="reason" maxlength="300" placeholder="Reason" aria-label="Reason" class={ view.InputInline + " w-36" }/>
+											<button class={ view.ButtonDanger + view.ButtonSmall } type="submit">Revoke key</button>
+										</form>
+									}
+								</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			</div>
+		}
+		@view.Card() {
+			@view.CardHeader("Servers", "")
+			@serverTable(p, rows)
+		}
+	}
+}
+
+// ---------- servers
+templ serverTable(p view.Page, rows []ServerRow) {
+	if len(rows) == 0 {
+		@view.Empty("None.")
+	} else {
+		<div class={ view.TableWrap }>
+			<table class={ view.Table }>
+				<thead>
+					<tr>
+						<th class={ view.Th }>Server</th>
+						<th class={ view.Th }>Publisher</th>
+						<th class={ view.Th }>Name</th>
+						<th class={ view.ThNum }>Players</th>
+						<th class={ view.Th }>Listed</th>
+						<th class={ view.Th }>Probe</th>
+						<th class={ view.Th }>Updated</th>
+						<th class={ view.Th }>Moderation</th>
+					</tr>
+				</thead>
+				<tbody>
+					for _, r := range rows {
+						<tr class={ view.Tr }>
+							<td class={ view.Td }>
+								<code class="whitespace-nowrap">{ r.Server.ID }</code>
+								<div class="mt-1 text-xs text-muted">{ r.Server.Instance }</div>
+							</td>
+							<td class={ view.Td }><a class={ view.Link } href={ templ.URL("/admin/publishers/" + r.Server.PublisherID) }>{ r.Server.PublisherID }</a></td>
+							<td class={ view.Td }>
+								<div class="font-medium">{ r.Server.Name }</div>
+								<div class="text-xs text-muted">{ r.Server.Map }, { r.Server.Gametype }</div>
+							</td>
+							<td class={ view.TdNum }>{ strconv.Itoa(r.Server.Players) }/{ strconv.Itoa(r.Server.MaxPlayers) }</td>
+							<td class={ view.Td }>
+								if r.Listed {
+									@view.Badge(view.OK, "listed")
+								} else {
+									<span class="text-muted">{ r.Why }</span>
+								}
+							</td>
+							<td class={ view.Td + " text-muted" }>{ r.Server.Probe }</td>
+							<td class={ view.Td + " whitespace-nowrap text-muted" }>{ view.Time(r.Server.Updated) }</td>
+							<td class={ view.Td }>
+								<form method="post" action={ templ.URL("/admin/servers/" + r.Server.ID + "/flags") } class="flex flex-wrap items-center gap-x-3 gap-y-2">
+									@view.CSRF(p.CSRF)
+									<label class="flex items-center gap-1.5 text-xs"><input type="checkbox" name="hidden" value="1" checked?={ r.Server.Hidden } class={ view.Checkbox }/> hidden</label>
+									<label class="flex items-center gap-1.5 text-xs"><input type="checkbox" name="trusted" value="1" checked?={ r.Server.Trusted } class={ view.Checkbox }/> trusted</label>
+									<input type="text" name="reason" maxlength="300" placeholder="Reason" aria-label="Reason" value={ r.Server.HiddenReason } class={ view.InputInline + " w-32" }/>
+									<button class={ view.ButtonSecondary + view.ButtonSmall } type="submit">Set</button>
+								</form>
+							</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+		</div>
+	}
+}
+
+// disputes are the refused or taken-over listings of the last week.
+templ disputes(title, serverColumn, keyColumn string, entries []model.AuditEntry) {
+	if len(entries) > 0 {
+		<h3 class="mt-6 mb-2">{ title }</h3>
+		<div class={ view.TableWrap }>
+			<table class={ view.Table }>
+				<thead>
+					<tr>
+						<th class={ view.Th }>Time</th>
+						<th class={ view.Th }>{ serverColumn }</th>
+						<th class={ view.Th }>{ keyColumn }</th>
+						<th class={ view.Th }>What</th>
+					</tr>
+				</thead>
+				<tbody>
+					for _, e := range entries {
+						<tr class={ view.Tr }>
+							<td class={ view.Td + " whitespace-nowrap text-muted" }>{ view.Time(e.Time) }</td>
+							<td class={ view.Td }><code>{ e.Target }</code></td>
+							<td class={ view.Td }>{ e.Actor }</td>
+							<td class={ view.Td }>{ e.Detail }</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+		</div>
+	}
+}
+
+templ serversPage(p view.Page, rows []ServerRow, taken, takenOver []model.AuditEntry) {
+	@layout(p) {
+		@heading("Servers", "Hidden: listed to nobody, the operator told why at each publish. Trusted: listed without a probe (for a server the probe cannot reach).")
+		@view.Card() {
+			@serverTable(p, rows)
+		}
+		if len(taken) > 0 || len(takenOver) > 0 {
+			@view.Card() {
+				@view.CardHeader("Disputed listings", "")
+				@view.Hint() {
+					A host's listing is published by one publisher at a time. A publish whose listing's host key another publisher's live server holds is refused (<code>listing_taken</code>): the holder may have copied the listing from a list while the host's own publisher was not publishing. A holder whose listing is not renewed for 90 seconds loses the host key to a publisher with a newer listing of it; one that keeps copying fresh listings does not. To settle a dispute, hide the copying server above, or suspend its publisher: neither then holds the host key, and the host's own publisher's next publish is taken. The last 7 days, refusals once an hour per server and holder.
+				}
+				@disputes("Refused", "Refused server", "Publisher key", taken)
+				@disputes("Taken over", "Closed server", "By publisher key", takenOver)
+			}
+		}
+	}
+}
+
+// ---------- peers, audit log
+templ peersPage(p view.Page, rows []PeerRow, interval string) {
+	@layout(p) {
+		@heading("Peers", "Peer masters share approvals: this master fetches each trusted peer's records every "+interval+".")
+		@view.Card() {
+			if len(rows) == 0 {
+				@view.Empty("No peer is configured (MASTER_PEERS).")
+			} else {
+				<div class={ view.TableWrap }>
+					<table class={ view.Table }>
+						<thead>
+							<tr>
+								<th class={ view.Th }>URL</th>
+								<th class={ view.Th }>Key id</th>
+								<th class={ view.Th }>Trusted</th>
+								<th class={ view.Th }>Last fetched</th>
+								<th class={ view.Th }>Last error</th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, r := range rows {
+								<tr class={ view.Tr }>
+									<td class={ view.Td }>{ r.URL }</td>
+									<td class={ view.Td }><code>{ r.KeyID }</code></td>
+									<td class={ view.Td }>
+										if r.Trusted {
+											@view.Badge(view.OK, "yes")
+										} else {
+											@view.Badge(view.Neutral, "no")
+										}
+									</td>
+									<td class={ view.Td + " text-muted" }>{ view.Time(r.LastOK) }</td>
+									<td class={ view.Td + " text-bad" }>{ r.LastError }</td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				</div>
+			}
+		}
+	}
+}
+
+templ auditPage(p view.Page, entries []model.AuditEntry, older int64) {
+	@layout(p) {
+		@heading("Audit log", "Every action, from these pages, Discord or the command line.")
+		@view.Card() {
+			<div class={ view.TableWrap }>
+				<table class={ view.Table }>
+					<thead>
+						<tr>
+							<th class={ view.ThNum }>#</th>
+							<th class={ view.Th }>Time</th>
+							<th class={ view.Th }>Who</th>
+							<th class={ view.Th }>What</th>
+							<th class={ view.Th }>To</th>
+							<th class={ view.Th }>Why</th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, e := range entries {
+							<tr class={ view.Tr }>
+								<td class={ view.TdNum + " text-muted" }>{ strconv.FormatInt(e.N, 10) }</td>
+								<td class={ view.Td + " whitespace-nowrap text-muted" }>{ view.Time(e.Time) }</td>
+								<td class={ view.Td }>{ e.Actor }</td>
+								<td class={ view.Td }>
+									@view.Badge(view.Neutral, e.Action)
+								</td>
+								<td class={ view.Td }>
+									if e.Target != "" {
+										<code>{ e.Target }</code>
+									}
+								</td>
+								<td class={ view.Td + " text-muted" }>{ e.Detail }</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			</div>
+			if older != 0 {
+				<div class="mt-4">
+					<a class={ view.ButtonSecondary + view.ButtonSmall } href={ templ.URL("/admin/audit?before=" + strconv.FormatInt(older, 10)) }>Older</a>
+				</div>
+			}
+		}
+	}
+}
+
+// ---------- Discord
+
+// botState is the bot's connection.
+templ botState(s discord.State) {
+	switch s.Status {
+		case discord.Connected:
+			@view.Badge(view.OK, "connected")
+			as { s.User.Name }
+		case discord.Connecting:
+			@view.Badge(view.Warn, "connecting")
+			if s.Reason != "" {
+				({ s.Reason })
+			}
+		case discord.Failed:
+			@view.Badge(view.Bad, "error")
+			: { s.Reason }
+		default:
+			@view.Badge(view.Neutral, "off")
+			if s.Reason != "" {
+				: { s.Reason }
+			}
+	}
+	if !s.Since.IsZero() {
+		<span class="text-muted">since { view.Time(s.Since.Unix()) }</span>
+	}
+}
+
+// configured is a setting /configure chooses, or none.
+templ configured(value, env string, fromEnv bool) {
+	if value != "" {
+		<code>{ value }</code>
+	} else {
+		<span class="text-muted">none: run <code>/configure</code> in Discord</span>
+	}
+	if fromEnv {
+		<span class="text-muted">({ env })</span>
+	}
+}
+
+templ discordPage(p view.Page, d discordView) {
+	@layout(p) {
+		@heading("Discord bot", "") {
+			if d.Available {
+				<div class="text-sm">
+					@botState(d.State)
+				</div>
+			}
+		}
+		if d.Available {
+			<div class="grid items-start gap-6 lg:grid-cols-[1fr_24rem]">
+				@view.Card() {
+					@view.CardHeader("Settings", "Saving connects the bot again.")
+					<form method="post" action="/admin/discord" class="space-y-5">
+						@view.CSRF(p.CSRF)
+						@view.FormField("token", "Bot token", tokenHint(d)) {
+							<input
+								type="password"
+								id="token"
+								name="token"
+								maxlength="200"
+								autocomplete="off"
+								placeholder={ tokenPlaceholder(d) }
+								disabled?={ d.FromEnv["token"] }
+								class={ view.Input }
+							/>
+						}
+						@view.FormField("guild", "Server (guild) id", envNote(d.FromEnv["guild"], "MASTER_DISCORD_GUILD")+"Where /apply and /configure are registered. With Developer Mode on (User Settings, Advanced), right-click the server, Copy Server ID. A new server clears the log channel and the approver roles.") {
+							<input type="text" id="guild" name="guild" maxlength="20" inputmode="numeric" value={ d.Guild } disabled?={ d.FromEnv["guild"] } class={ view.Input }/>
+						}
+						@view.FormField("invite", "Public invite URL (optional)", envNote(d.FromEnv["invite"], "MASTER_DISCORD_INVITE")+"Shown on the public /apply page.") {
+							<input type="url" id="invite" name="invite" maxlength="200" placeholder="https://discord.gg/..." value={ d.Invite } disabled?={ d.FromEnv["invite"] } class={ view.Input }/>
+						}
+						<div class="flex flex-wrap gap-2 border-t border-line pt-5">
+							<button type="submit" class={ view.ButtonPrimary }>Save and connect</button>
+							if d.AddURL != "" {
+								<a class={ view.ButtonSecondary } href={ templ.URL(d.AddURL) } target="_blank" rel="noopener">Invite to server</a>
+							} else {
+								<button class={ view.ButtonSecondary } type="button" disabled title="Save a bot token first">Invite to server</button>
+							}
+						</div>
+						@view.Hint() {
+							Invite to server adds the bot to the server above, with the <code>bot</code> and <code>applications.commands</code> scopes; press Connect again once it is in.
+						}
+					</form>
+				}
+				<div class="space-y-6">
+					@view.Card() {
+						@view.CardHeader("State", "")
+						@view.Fields() {
+							@view.Field("State") {
+								@botState(d.State)
+							}
+							if d.State.SyncError != "" {
+								@view.Field("Last failure") {
+									<span class="text-bad">{ d.State.SyncError }</span>
+								}
+							}
+							@view.Field("Log channel") {
+								@configured(d.Channel, "MASTER_DISCORD_CHANNEL", d.FromEnv["channel"])
+							}
+							@view.Field("Approver roles") {
+								@configured(d.Roles, "MASTER_DISCORD_APPROVER_ROLES", d.FromEnv["roles"])
+							}
+						}
+						<div class="mt-5 flex flex-wrap gap-2 border-t border-line pt-5">
+							<form method="post" action="/admin/discord/reconnect">
+								@view.CSRF(p.CSRF)
+								<button class={ view.ButtonSecondary + view.ButtonSmall } type="submit">Connect again</button>
+							</form>
+							if d.TokenSet && !d.FromEnv["token"] {
+								<form method="post" action="/admin/discord/clear-token">
+									@view.CSRF(p.CSRF)
+									<button class={ view.ButtonDanger + view.ButtonSmall } type="submit">Clear the token</button>
+								</form>
+							}
+						</div>
+					}
+					@view.Card() {
+						@view.CardHeader("How it works", "")
+						<p class="text-sm leading-relaxed text-muted">Operators apply with the bot's <code>/apply</code> command in the Discord server; each application is posted to the log channel with Approve and Deny buttons, which only members of an approver role may press. The server's admins (Administrator or Manage Server) choose the channel and the roles with the bot's <code>/configure</code> (or <code>/config</code>) command.</p>
+					}
+				</div>
+			</div>
+		}
+	}
+}

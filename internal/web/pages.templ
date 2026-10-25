@@ -1,0 +1,195 @@
+package web
+
+import (
+	"strconv"
+
+	"github.com/OpenCommunityEdition/opence-master-server/internal/core"
+	"github.com/OpenCommunityEdition/opence-master-server/internal/view"
+)
+
+// navLink is the public header's link, marked when it is the page's.
+templ navLink(href, text string, current bool) {
+	<a
+		href={ templ.URL(href) }
+		class={ "rounded-md px-3 py-1.5 text-sm transition", templ.KV("bg-fg/10 font-medium text-fg", current),
+			templ.KV("text-muted hover:bg-fg/5 hover:text-fg", !current) }
+		if current {
+			aria-current="page"
+		}
+	>{ text }</a>
+}
+
+// layout is the public pages' frame: the header, the page, the footer.
+templ layout(p view.Page) {
+	@view.Document(p.Title + " - " + p.Master) {
+		<header class="sticky top-0 z-10 border-b border-line bg-canvas/80 backdrop-blur">
+			<div class="mx-auto flex max-w-5xl flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3">
+				<a href="/" class="flex items-center gap-2.5 font-semibold tracking-tight">
+					<span class="grid size-7 place-items-center rounded-md bg-fg text-[0.6875rem] font-bold text-canvas">CE</span>
+					<h1 class="text-base">{ p.Master }</h1>
+				</a>
+				<nav class="flex flex-wrap items-center gap-1">
+					@navLink("/", "Servers", p.Section == "servers")
+					@navLink("/apply", "Apply as an operator", p.Section == "apply")
+					@navLink("/admin/", "Admin", false)
+				</nav>
+			</div>
+		</header>
+		<main class="mx-auto max-w-5xl space-y-6 px-4 py-8">
+			{ children... }
+		</main>
+		<footer class="mx-auto max-w-5xl px-4 pb-8 text-xs text-muted">
+			<div class="space-y-2 border-t border-line pt-8">
+				<p>An OpenCE master server (protocol { strconv.Itoa(p.Protocol) }, opence-master { p.Version }). It lists dedicated servers whose operators it has approved; every entry carries the host's own signed listing, and the list is signed with the master's key <code>{ p.KeyID }</code>.</p>
+				<p>
+					if p.Contact != "" {
+						Contact: { p.Contact }.
+					}
+					{ p.Policy }
+				</p>
+				<p>The source of this program is at <a href="https://github.com/OpenCommunityEdition/opence-master-server">github.com/OpenCommunityEdition/opence-master-server</a> (AGPL-3.0-or-later).</p>
+			</div>
+		</footer>
+	}
+}
+
+// indexPage is the server list.
+templ indexPage(p view.Page, servers []core.Entry, players int) {
+	@layout(p) {
+		<div class="flex flex-wrap items-end justify-between gap-4">
+			<div>
+				<h2 class="text-2xl">Servers</h2>
+				<p class="mt-1 text-sm text-muted">Join from the game's server browser (Join Game, Server Browser).</p>
+			</div>
+			<div class="flex gap-2">
+				@stat(strconv.Itoa(len(servers)), view.Plural(len(servers), "server listed", "servers listed"))
+				@stat(strconv.Itoa(players), view.Plural(players, "player", "players"))
+			</div>
+		</div>
+		@view.Card() {
+			if len(servers) == 0 {
+				@view.Empty("No server is listed now.")
+			} else {
+				<div class={ view.TableWrap }>
+					<table class={ view.Table }>
+						<thead>
+							<tr>
+								<th class={ view.Th }>Name</th>
+								<th class={ view.Th }>Map</th>
+								<th class={ view.Th }>Gametype</th>
+								<th class={ view.ThNum }>Players</th>
+								<th class={ view.Th }>Publisher</th>
+								<th class={ view.Th }>Region</th>
+								<th class={ view.Th }><span class="sr-only">Details</span></th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, s := range servers {
+								<tr class={ view.Tr }>
+									<td class={ view.Td + " font-medium" }>{ s.Name }</td>
+									<td class={ view.Td }>{ s.Map }</td>
+									<td class={ view.Td }>
+										if s.Variant != "" {
+											{ s.Variant }
+										} else {
+											{ s.Gametype }
+										}
+									</td>
+									<td class={ view.TdNum }>{ strconv.Itoa(s.Players) }/{ strconv.Itoa(s.MaxPlayers) }</td>
+									<td class={ view.Td + " text-muted" }>{ s.Publisher.Name }</td>
+									<td class={ view.Td + " uppercase text-muted" }>{ s.Region }</td>
+									<td class={ view.Td }>
+										<div class="flex flex-wrap justify-end gap-1">
+											if s.Dedicated {
+												@view.Badge(view.Neutral, "dedicated")
+											}
+											if s.Password {
+												@view.Badge(view.Warn, "password")
+											}
+											if s.InProgress {
+												@view.Badge(view.Info, "in progress")
+											}
+											if !s.Reachable {
+												@view.Badge(view.Neutral, "not probed")
+											}
+											@view.Badge(view.Neutral, "v"+strconv.Itoa(s.NetworkVersion))
+										</div>
+									</td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				</div>
+			}
+		}
+		<p class="text-sm text-muted">The same list for programs: <a href="/v1/servers">/v1/servers</a> (signed JSON).</p>
+	}
+}
+
+// stat is a number and what it counts.
+templ stat(number, what string) {
+	<div class="rounded-lg border border-line bg-surface px-4 py-2 text-right">
+		<div class="text-xl font-semibold tabular-nums">{ number }</div>
+		<div class="text-xs text-muted">{ what }</div>
+	</div>
+}
+
+// step is one of the apply page's steps.
+templ step(n int) {
+	<li class="flex gap-4">
+		<span class="grid size-7 shrink-0 place-items-center rounded-full border border-line bg-fg/5 text-xs font-semibold">{ strconv.Itoa(n) }</span>
+		<div class="pt-0.5 leading-relaxed">
+			{ children... }
+		</div>
+	</li>
+}
+
+// applyPage tells how to apply: with the Discord bot.
+templ applyPage(p view.Page, invite string, requireProof, accepting bool) {
+	@layout(p) {
+		<div>
+			<h2 class="text-2xl">Apply to publish servers</h2>
+			<p class="mt-1 max-w-3xl text-sm text-muted">An operator who runs OpenCE dedicated servers applies once, with the public key of their publisher key, through this master's Discord bot: applications are not taken on this website.</p>
+		</div>
+		if !accepting {
+			@view.Alert(view.Warn) {
+				The bot is not connected now; try again later, or ask the master's contact.
+			}
+		}
+		@view.Card() {
+			<ol class="space-y-5 text-sm">
+				@step(1) {
+					On the server, make the publisher key with <code>halo --server --keygen</code>: it writes <code>publisher.key</code> beside <code>config.toml</code> and prints the public key (<code>ed25519:...</code>) and its key id. The private key never leaves the server.
+				}
+				@step(2) {
+					if invite != "" {
+						Join <a href={ templ.URL(invite) } rel="noopener">the master's Discord server</a>
+					} else {
+						Join the master's Discord server (ask its contact below for an invite)
+					}
+					and type <code>/apply</code> there. The bot answers you alone with a nonce to sign{ optional(!requireProof) }: run <code>halo --server --sign &lt;the nonce&gt;</code> on the server.
+				}
+				@step(3) {
+					Press the bot's <strong>Fill in the application</strong> button, and give a display name (shown beside your servers), the public key, what <code>--sign</code> printed, how many servers you run at once (and a region, if you like) and a note to the approvers.
+				}
+			</ol>
+			<p class="mt-6 border-t border-line pt-5 text-sm text-muted">The server can publish at once: it is told <code>publisher_pending</code> until an approver decides, then it is listed at its next publish. The bot tells you of the decision by a direct message. The masters share approvals, so one application is enough.</p>
+		}
+	}
+}
+
+// messagePage is a heading and lines (an error, or a limit).
+templ messagePage(p view.Page, m Message) {
+	@layout(p) {
+		<div class="mx-auto max-w-md">
+			@view.Card() {
+				@view.CardHeader(m.Heading, "")
+				<div class="space-y-2 text-sm text-muted">
+					for _, line := range m.Lines {
+						<p>{ line }</p>
+					}
+				</div>
+			}
+		</div>
+	}
+}

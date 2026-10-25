@@ -11,6 +11,7 @@ go build ./... && go vet ./... && go test -race ./...
 gofmt -l .                                              # must print nothing
 go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...   # CI fails on any finding
 python3 -m pytest -q tests/conformance                  # the protocol, end to end
+sh tools/generate.sh                                    # the pages' generated files, committed
 sh -n install.sh && dash -n install.sh                  # the installer is POSIX sh
 docker run --rm -v "$PWD:/repo" --workdir /repo rhysd/actionlint:1.7.12   # the workflows, with shellcheck
 ```
@@ -66,9 +67,20 @@ Tests touch nothing beyond loopback: Discord is a fake `Client`
   Match the file you are in.
 - Errors and user-facing text name the fix (`set MASTER_X`, `run /configure`,
   `restore the key from its backup`).
-- Templates are embedded (`internal/*/templates`); a new admin page is
-  added to the map in `admin.New`, with the files it includes.
-- Pages work without JavaScript; the CSS is `internal/web/static/style.css`.
+- The pages are templ components: `internal/web/pages.templ` (public),
+  `internal/admin/pages.templ` (admin), and what they share in
+  `internal/view` (the document, cards, badges, alerts, tables, and the
+  classes of buttons and inputs, in `view.go`). Build a page from those
+  rather than new class lists, so the pages stay alike.
+- Styling is Tailwind, from `internal/view/style.css`: the colours are named
+  there (`canvas`, `surface`, `fg`, `muted`, `line`, `accent`, `ok`, `warn`,
+  `bad`) for both themes, so use those rather than raw colours, and no
+  `dark:` twin is needed. The Content-Security-Policy allows no inline
+  `style=` or `<script>`.
+- After changing a `.templ` file or `style.css`, run `sh tools/generate.sh`
+  and commit `*_templ.go` and `internal/web/static/style.css` with it.
+- Pages work without JavaScript. Keep the texts the tests read (and a
+  `<code>` or `<span>` they match) when restyling.
 
 ## Releases
 

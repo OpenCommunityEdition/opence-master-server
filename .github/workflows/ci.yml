@@ -17,6 +17,10 @@ jobs:
           # the latest patch of go.mod's Go: the standard library's fixes
           go-version: "1.26.x"
           check-latest: true
+      - name: the generated pages are current (templ's Go code, Tailwind's stylesheet)
+        run: |
+          sh tools/generate.sh
+          git diff --exit-code -- internal
       - name: go vet
         run: go vet ./...
       - name: the workflows parse (actionlint; a broken one is skipped without a word)

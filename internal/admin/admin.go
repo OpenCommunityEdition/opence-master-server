@@ -11,10 +11,8 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
-	"embed"
 	"encoding/hex"
 	"errors"
-	"html/template"
 	"net/http"
 	"strconv"
 	"strings"
@@ -31,9 +29,6 @@ import (
 	"github.com/OpenCommunityEdition/opence-master-server/internal/update"
 	"github.com/OpenCommunityEdition/opence-master-server/internal/web"
 )
-
-//go:embed templates/*.html
-var templateFiles embed.FS
 
 const (
 	cookieName     = "opence_admin"
@@ -59,7 +54,6 @@ type Admin struct {
 	Discord *discord.Bot
 	// the updater, which the settings page shows (nil: none)
 	Updates *update.Updater
-	pages   map[string]*template.Template
 
 	mu       sync.Mutex
 	sessions map[string]*session
@@ -70,24 +64,7 @@ type Admin struct {
 
 // New makes the admin pages.
 func New(m *core.Master, clients *httpx.Clients) (*Admin, error) {
-	pages := map[string]*template.Template{}
-	for name, files := range map[string][]string{
-		"login": {"login"}, "applications": {"applications"}, "application": {"application"},
-		"publishers": {"publishers"}, "publisher": {"publisher", "servertable"},
-		"servers": {"servers", "servertable"}, "peers": {"peers"}, "audit": {"audit"}, "discord": {"discord"},
-		"setup": {"setup", "profile"}, "settings": {"settings", "profile"},
-	} {
-		patterns := []string{"templates/layout.html"}
-		for _, f := range files {
-			patterns = append(patterns, "templates/"+f+".html")
-		}
-		t, err := template.New(name).Funcs(web.Funcs).ParseFS(templateFiles, patterns...)
-		if err != nil {
-			return nil, err
-		}
-		pages[name] = t
-	}
-	a := &Admin{M: m, Clients: clients, pages: pages, sessions: map[string]*session{},
+	a := &Admin{M: m, Clients: clients, sessions: map[string]*session{},
 		failures: limit.New(5, 2*time.Minute, func() time.Time { return m.Now() }).Grouped(netaddr.Group)}
 	has, err := a.hasToken()
 	if err != nil {
@@ -249,35 +226,12 @@ func (a *Admin) guard(next handler) http.HandlerFunc {
 	}
 }
 
-func (a *Admin) render(w http.ResponseWriter, status int, name, title string, q request, data map[string]any) {
-	data["Signed"] = q.csrf != "" || q.bearer
-	data["CSRF"] = q.csrf
-	if a.Updates != nil && data["Signed"] == true {
-		if s := a.Updates.Status(); s.Available && !s.Updating {
-			data["UpdateBanner"] = s.Latest.Version
-		}
-	}
-	if q.session != nil {
-		a.mu.Lock()
-		notice, problem := q.session.notice, q.session.problem
-		q.session.notice, q.session.problem = "", ""
-		a.mu.Unlock()
-		if notice != "" {
-			data["Notice"] = notice
-		}
-		if problem != "" && data["Error"] == nil {
-			data["Error"] = problem
-		}
-	}
-	web.Render(w, a.pages[name], status, web.PageFor(a.M, title, data))
-}
-
 func (a *Admin) loginForm(w http.ResponseWriter, r *http.Request) {
 	if has, err := a.hasToken(); err == nil && !has {
 		http.Redirect(w, r, "/admin/setup", http.StatusSeeOther)
 		return
 	}
-	a.render(w, http.StatusOK, "login", "Log in", request{}, map[string]any{})
+	show(w, r, http.StatusOK, loginPage(a.page("Log in", "", request{})))
 }
 
 func (a *Admin) login(w http.ResponseWriter, r *http.Request) {
@@ -288,23 +242,29 @@ func (a *Admin) login(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
 	if err := r.ParseForm(); err != nil || !web.SameOrigin(r, a.Clients) {
-		a.render(w, http.StatusBadRequest, "login", "Log in", request{}, map[string]any{"Error": "The form was refused."})
+		a.loginError(w, r, http.StatusBadRequest, "The form was refused.")
 		return
 	}
 	if !a.failures.Available(client.Key()) {
-		a.render(w, http.StatusTooManyRequests, "login", "Log in", request{},
-			map[string]any{"Error": "Too many tries; wait a few minutes."})
+		a.loginError(w, r, http.StatusTooManyRequests, "Too many tries; wait a few minutes.")
 		return
 	}
 	if !a.tokenOK(r.PostForm.Get("token")) {
 		a.failures.Allow(client.Key())
 		_ = a.M.Store.Audit("admin", "login-failed", "", "from "+client.IP.String())
-		a.render(w, http.StatusUnauthorized, "login", "Log in", request{}, map[string]any{"Error": "Not the admin token."})
+		a.loginError(w, r, http.StatusUnauthorized, "Not the admin token.")
 		return
 	}
 	a.startSession(w, client.Secure)
 	_ = a.M.Store.Audit("admin", "login", "", "from "+client.IP.String())
 	http.Redirect(w, r, "/admin/applications", http.StatusSeeOther)
+}
+
+// loginError shows the login page with an error.
+func (a *Admin) loginError(w http.ResponseWriter, r *http.Request, status int, text string) {
+	p := a.page("Log in", "", request{})
+	p.Error = text
+	show(w, r, status, loginPage(p))
 }
 
 // startSession logs the browser in.
@@ -371,11 +331,12 @@ func (a *Admin) applications(w http.ResponseWriter, r *http.Request, q request) 
 		status = ""
 	}
 	list, err := a.M.Store.Applications(status, 500)
+	p := a.page("Applications", "applications", q)
+	code := http.StatusOK
 	if err != nil {
-		a.render(w, http.StatusInternalServerError, "applications", "Applications", q, map[string]any{"Error": err.Error()})
-		return
+		p.Error, code = err.Error(), http.StatusInternalServerError
 	}
-	a.render(w, http.StatusOK, "applications", "Applications", q, map[string]any{"Applications": list})
+	show(w, r, code, applicationsPage(p, list, status == ""))
 }
 
 func (a *Admin) application(w http.ResponseWriter, r *http.Request, q request) {
@@ -388,8 +349,8 @@ func (a *Admin) application(w http.ResponseWriter, r *http.Request, q request) {
 		return
 	}
 	related, _ := a.M.Store.RelatedApplications(app)
-	a.render(w, http.StatusOK, "application", "Application "+app.ID, q, map[string]any{
-		"Application": app, "Related": related, "DefaultQuota": a.M.Config.DefaultQuota})
+	show(w, r, http.StatusOK, applicationPage(a.page("Application "+app.ID, "applications", q), app, related,
+		a.M.Config.DefaultQuota))
 }
 
 func (a *Admin) approve(w http.ResponseWriter, r *http.Request, q request) {
@@ -421,7 +382,7 @@ func (a *Admin) publishers(w http.ResponseWriter, r *http.Request, q request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	a.render(w, http.StatusOK, "publishers", "Publishers", q, map[string]any{"Publishers": states})
+	show(w, r, http.StatusOK, publishersPage(a.page("Publishers", "publishers", q), states))
 }
 
 // ServerRow is a server and whether it is listed.
@@ -474,8 +435,7 @@ func (a *Admin) publisher(w http.ResponseWriter, r *http.Request, q request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	a.render(w, http.StatusOK, "publisher", state.Publisher.Name, q, map[string]any{
-		"State": state, "Servers": rows})
+	show(w, r, http.StatusOK, publisherPage(a.page(state.Publisher.Name, "publishers", q), state, rows))
 }
 
 func (a *Admin) status(w http.ResponseWriter, r *http.Request, q request) {
@@ -519,8 +479,7 @@ func (a *Admin) servers(w http.ResponseWriter, r *http.Request, q request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	a.render(w, http.StatusOK, "servers", "Servers", q, map[string]any{"Servers": rows, "Taken": taken,
-		"TakenOver": takenOver})
+	show(w, r, http.StatusOK, serversPage(a.page("Servers", "servers", q), rows, taken, takenOver))
 }
 
 func (a *Admin) flags(w http.ResponseWriter, r *http.Request, q request) {
@@ -544,8 +503,7 @@ func (a *Admin) peers(w http.ResponseWriter, r *http.Request, q request) {
 		rows = append(rows, PeerRow{URL: p.URL, KeyID: p.KeyID, Trusted: a.M.TrustedPeer(p.KeyID),
 			LastOK: state.LastOK, LastError: state.LastError})
 	}
-	a.render(w, http.StatusOK, "peers", "Peers", q, map[string]any{"Peers": rows,
-		"Interval": a.M.Config.PeersInterval.String()})
+	show(w, r, http.StatusOK, peersPage(a.page("Peers", "peers", q), rows, a.M.Config.PeersInterval.String()))
 }
 
 func (a *Admin) audit(w http.ResponseWriter, r *http.Request, q request) {
@@ -555,33 +513,29 @@ func (a *Admin) audit(w http.ResponseWriter, r *http.Request, q request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	data := map[string]any{"Entries": entries}
+	older := int64(0)
 	if len(entries) == 200 {
-		data["Older"] = entries[len(entries)-1].N
+		older = entries[len(entries)-1].N
 	}
-	a.render(w, http.StatusOK, "audit", "Audit log", q, data)
+	show(w, r, http.StatusOK, auditPage(a.page("Audit log", "audit", q), entries, older))
 }
 
 // discordPage shows the Discord bot's settings (never its token: only
 // whether one is set) and its state.
 func (a *Admin) discordPage(w http.ResponseWriter, r *http.Request, q request) {
-	data := map[string]any{}
+	p := a.page("Discord", "discord", q)
 	if a.Discord == nil {
-		data["Error"] = "This master runs no Discord bot."
-		a.render(w, http.StatusOK, "discord", "Discord", q, data)
+		p.Error = "This master runs no Discord bot."
+		show(w, r, http.StatusOK, discordPage(p, discordView{}))
 		return
 	}
 	settings, err := a.Discord.Settings()
 	if err != nil {
-		data["Error"] = err.Error()
+		p.Error = err.Error()
 	}
-	data["TokenSet"] = settings.Token != ""
-	data["Guild"], data["Channel"], data["Invite"] = settings.Guild, settings.Channel, settings.Invite
-	data["Roles"] = strings.Join(settings.Roles, ", ")
-	data["FromEnv"] = settings.FromEnv
-	data["State"] = a.Discord.State()
-	data["AddURL"] = a.Discord.AddURL()
-	a.render(w, http.StatusOK, "discord", "Discord", q, data)
+	show(w, r, http.StatusOK, discordPage(p, discordView{Available: true, State: a.Discord.State(),
+		TokenSet: settings.Token != "", Guild: settings.Guild, Channel: settings.Channel, Invite: settings.Invite,
+		Roles: roles(settings.Roles), AddURL: a.Discord.AddURL(), FromEnv: settings.FromEnv}))
 }
 
 func (a *Admin) discordSave(w http.ResponseWriter, r *http.Request, q request) {

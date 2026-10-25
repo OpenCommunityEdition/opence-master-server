@@ -1,0 +1,74 @@
+/* The pages' stylesheet's source: Tailwind (tools/generate.sh writes
+   internal/web/static/style.css from it). The classes are in the .templ files
+   and in view.go's constants; the colours are named here, once for the light
+   theme and once for the dark one (the system's choice), so a class such as
+   bg-surface or text-muted needs no dark: twin. */
+@import "tailwindcss" source(none);
+@source "../**/*.{templ,go}";
+
+:root {
+	--canvas: #fafafa;
+	--surface: #ffffff;
+	--fg: #0a0a0a;
+	--muted: #6b6b6b;
+	--line: rgb(0 0 0 / 0.1);
+	--accent: #2563eb;
+	--ok: #15803d;
+	--warn: #b45309;
+	--bad: #dc2626;
+	color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root {
+		--canvas: #000000;
+		--surface: #0a0a0a;
+		--fg: #fafafa;
+		--muted: #a3a3a3;
+		--line: rgb(255 255 255 / 0.1);
+		--accent: #3b82f6;
+		--ok: #4ade80;
+		--warn: #fbbf24;
+		--bad: #f87171;
+	}
+}
+
+@theme inline {
+	--color-canvas: var(--canvas);
+	--color-surface: var(--surface);
+	--color-fg: var(--fg);
+	--color-muted: var(--muted);
+	--color-line: var(--line);
+	--color-accent: var(--accent);
+	--color-ok: var(--ok);
+	--color-warn: var(--warn);
+	--color-bad: var(--bad);
+}
+
+@layer base {
+	body {
+		@apply bg-canvas text-fg antialiased;
+	}
+	/* (a link in running text; a styled one carries its own classes) */
+	a:not([class]) {
+		@apply text-accent underline-offset-2 hover:underline;
+	}
+	code {
+		@apply rounded bg-fg/5 px-1 py-0.5 font-mono text-[0.8125rem] wrap-anywhere;
+	}
+	code.token {
+		@apply block p-3 text-sm select-all;
+	}
+	h2 {
+		@apply text-lg font-semibold tracking-tight;
+	}
+	h3 {
+		@apply text-sm font-semibold;
+	}
+	/* (a browser's own autofill colour, kept to the theme's) */
+	input:-webkit-autofill {
+		-webkit-box-shadow: 0 0 0 1000px var(--surface) inset !important;
+		-webkit-text-fill-color: var(--fg) !important;
+		caret-color: var(--fg) !important;
+	}
+}

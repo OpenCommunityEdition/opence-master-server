@@ -88,7 +88,15 @@ Docker, see ["Running a master"](#running-a-master) (systemd).
 go build ./cmd/opence-master                 # Go 1.26 or newer
 go vet ./... && go test ./...
 python3 -m pytest -q tests/conformance       # needs pytest; builds the binary with go
+sh tools/generate.sh                         # after changing a page (*.templ) or internal/view/style.css
 ```
+
+The pages are [templ](https://templ.guide) components styled with
+[Tailwind](https://tailwindcss.com): `tools/generate.sh` writes their Go code
+(`go tool templ generate`, pinned in `go.mod`) and the stylesheet (with
+Tailwind's standalone CLI, pinned and checksum-checked, downloaded once into
+`bin/`; no Node). Both are committed, so a build needs neither, and CI
+checks they are current.
 
 The conformance test starts masters on loopback with temporary databases
 and drives them with the reference publisher; it needs no game data and
@@ -464,6 +472,10 @@ as its own. `MASTER_PEERS_TRUST` stops a peer's words counting.
 | [github.com/bwmarrin/discordgo](https://github.com/bwmarrin/discordgo) v0.29.0 | BSD-3-Clause | The Discord bot's connection (`internal/discord/gateway.go` only) |
 | [github.com/gorilla/websocket](https://github.com/gorilla/websocket) v1.5.3 | BSD-2-Clause | discordgo's gateway WebSocket (and its close codes, in `gateway.go`) |
 | [golang.org/x/crypto](https://pkg.go.dev/golang.org/x/crypto) | BSD-3-Clause | discordgo's (its voice code, which the bot does not use) |
+| [github.com/a-h/templ](https://github.com/a-h/templ) | MIT | The pages (`*.templ`, compiled to `*_templ.go`), and its runtime |
+
+The stylesheet is made with [Tailwind CSS](https://tailwindcss.com)'s
+standalone CLI (MIT), at build time only: the master serves the CSS it wrote.
 
 Each is compatible with the AGPL 3.0; `go.sum` pins their checksums.
 

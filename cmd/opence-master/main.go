@@ -41,6 +41,7 @@ import (
 	"github.com/OpenCommunityEdition/opence-master-server/internal/sign"
 	"github.com/OpenCommunityEdition/opence-master-server/internal/store"
 	"github.com/OpenCommunityEdition/opence-master-server/internal/update"
+	"github.com/OpenCommunityEdition/opence-master-server/internal/view"
 	"github.com/OpenCommunityEdition/opence-master-server/internal/web"
 )
 
@@ -534,7 +535,7 @@ func administer(command string, args []string) error {
 				applicant = a.Email
 			}
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%v\t%s\n", a.ID, a.Status, a.Name, a.KeyID, a.Servers,
-				applicant, a.ProofOK, web.TimeText(a.Created))
+				applicant, a.ProofOK, view.TimeText(a.Created))
 		}
 		return w.Flush()
 	case "list-publishers":

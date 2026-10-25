@@ -33,7 +33,8 @@ func (a *Admin) codeOK(code string) bool {
 	return a.setupCode != "" && subtle.ConstantTimeCompare([]byte(code), []byte(a.setupCode)) == 1
 }
 
-func (a *Admin) setupData(name, contact string) map[string]any {
+// profile is the master's name and contact, or what a form sent.
+func (a *Admin) profile(name, contact string) profile {
 	p := a.M.Profile()
 	if name == "" {
 		name = p.Name
@@ -41,7 +42,14 @@ func (a *Admin) setupData(name, contact string) map[string]any {
 	if contact == "" {
 		contact = p.Contact
 	}
-	return map[string]any{"Name": name, "Contact": contact, "FromEnv": p.FromEnv}
+	return profile{Name: name, Contact: contact, FromEnv: p.FromEnv}
+}
+
+// setupAnswer shows the setup page, with an error if one is given.
+func (a *Admin) setupAnswer(w http.ResponseWriter, r *http.Request, status int, d setupView, problem string) {
+	p := a.page("Set up", "", request{})
+	p.Error = problem
+	show(w, r, status, setupPage(p, d))
 }
 
 func (a *Admin) setupPage(w http.ResponseWriter, r *http.Request) {
@@ -53,11 +61,11 @@ func (a *Admin) setupPage(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, http.StatusForbidden, "tls_required", "the admin pages are served over HTTPS only", "")
 		return
 	}
-	data := a.setupData("", "")
+	d := setupView{profile: a.profile("", "")}
 	if code := r.URL.Query().Get("code"); a.codeOK(code) {
-		data["Code"] = code
+		d.Code = code
 	}
-	a.render(w, http.StatusOK, "setup", "Set up", request{}, data)
+	a.setupAnswer(w, r, http.StatusOK, d, "")
 }
 
 func (a *Admin) setup(w http.ResponseWriter, r *http.Request) {
@@ -68,7 +76,7 @@ func (a *Admin) setup(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
 	if err := r.ParseForm(); err != nil || !web.SameOrigin(r, a.Clients) {
-		a.render(w, http.StatusBadRequest, "setup", "Set up", request{}, map[string]any{"Error": "The form was refused."})
+		a.setupAnswer(w, r, http.StatusBadRequest, setupView{}, "The form was refused.")
 		return
 	}
 	if a.SetupCode() == "" {
@@ -76,23 +84,19 @@ func (a *Admin) setup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !a.failures.Available(client.Key()) {
-		a.render(w, http.StatusTooManyRequests, "setup", "Set up", request{},
-			map[string]any{"Error": "Too many tries; wait a few minutes."})
+		a.setupAnswer(w, r, http.StatusTooManyRequests, setupView{}, "Too many tries; wait a few minutes.")
 		return
 	}
 	code, name, contact := r.PostForm.Get("code"), r.PostForm.Get("name"), r.PostForm.Get("contact")
 	if !a.codeOK(code) {
 		a.failures.Allow(client.Key())
 		_ = a.M.Store.Audit("admin", "setup-failed", "", "from "+client.IP.String())
-		a.render(w, http.StatusForbidden, "setup", "Set up", request{},
-			map[string]any{"Error": "Not this master's setup link. Open the link in its log."})
+		a.setupAnswer(w, r, http.StatusForbidden, setupView{}, "Not this master's setup link. Open the link in its log.")
 		return
 	}
-	data := a.setupData(name, contact)
-	data["Code"] = code
+	d := setupView{profile: a.profile(name, contact), Code: code}
 	if err := a.M.SetProfile(name, contact, "admin"); err != nil {
-		data["Error"] = setupError(err)
-		a.render(w, http.StatusBadRequest, "setup", "Set up", request{}, data)
+		a.setupAnswer(w, r, http.StatusBadRequest, d, setupError(err))
 		return
 	}
 	// (the code is claimed once: a second form sent with it is refused)
@@ -109,13 +113,12 @@ func (a *Admin) setup(w http.ResponseWriter, r *http.Request) {
 		a.mu.Lock()
 		a.setupCode = code
 		a.mu.Unlock()
-		data["Error"] = "The admin token could not be stored: " + err.Error()
-		a.render(w, http.StatusInternalServerError, "setup", "Set up", request{}, data)
+		a.setupAnswer(w, r, http.StatusInternalServerError, d, "The admin token could not be stored: "+err.Error())
 		return
 	}
 	_ = a.M.Store.Audit("admin", "setup", "", "from "+client.IP.String())
 	a.startSession(w, client.Secure)
-	a.render(w, http.StatusOK, "setup", "Set up", request{}, map[string]any{"Token": token})
+	a.setupAnswer(w, r, http.StatusOK, setupView{Token: token}, "")
 }
 
 func setupError(err error) string {
@@ -128,14 +131,16 @@ func setupError(err error) string {
 }
 
 func (a *Admin) settingsPage(w http.ResponseWriter, r *http.Request, q request) {
-	data := a.setupData("", "")
+	p := a.page("Settings", "settings", q)
+	var updates *update.Status
 	if a.Updates != nil {
-		data["Updates"] = a.Updates.Status()
+		status := a.Updates.Status()
+		updates = &status
 	}
 	if !a.M.Named() {
-		data["Error"] = "Name the master first: its name is shown in its lists, its pages and the Discord bot's messages."
+		p.Error = "Name the master first: its name is shown in its lists, its pages and the Discord bot's messages."
 	}
-	a.render(w, http.StatusOK, "settings", "Settings", q, data)
+	show(w, r, http.StatusOK, settingsPage(p, a.profile("", ""), updates))
 }
 
 func (a *Admin) settingsSave(w http.ResponseWriter, r *http.Request, q request) {
