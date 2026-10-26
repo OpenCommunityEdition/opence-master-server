@@ -25,20 +25,51 @@ const (
 	idUpdate        = "update:start:"
 )
 
-// The application form's inputs (a modal holds 5 at most: the number of
-// servers and the region share one).
+// The application form's inputs. The number of servers and the region are
+// /apply's options, chosen before the form opens (the region from a menu).
 const (
-	inputName    = "name"
-	inputKey     = "public_key"
-	inputProof   = "proof"
-	inputServers = "servers"
-	inputNote    = "note"
-	inputReason  = "reason"
+	inputName   = "name"
+	inputKey    = "public_key"
+	inputProof  = "proof"
+	inputNote   = "note"
+	inputReason = "reason"
 )
+
+// /apply's options
+const (
+	optionRegion  = "region"
+	optionServers = "servers"
+	// (the most servers an application may ask for: core's)
+	maximumServers = 64
+)
+
+// Regions are /apply's choices of a region (25 at most: Discord's menu):
+// an application names one of them.
+var Regions = []Choice{
+	{Name: "Europe", Value: "eu"},
+	{Name: "North America (east)", Value: "na-east"},
+	{Name: "North America (west)", Value: "na-west"},
+	{Name: "South America", Value: "sa"},
+	{Name: "Asia", Value: "asia"},
+	{Name: "Oceania", Value: "oce"},
+	{Name: "Middle East", Value: "me"},
+	{Name: "Africa", Value: "africa"},
+}
+
+// regionName is a region's words on /apply's menu.
+func regionName(value string) (string, bool) {
+	for _, r := range Regions {
+		if r.Value == value {
+			return r.Name, true
+		}
+	}
+	return "", false
+}
 
 // what each refused field is called on the form
 var fieldLabels = map[string]string{"name": "Display name", "public_key": "Public key", "proof": "Proof of key",
-	"servers": "Servers and region", "region": "Servers and region", "note": "Note", "discord": "your Discord username"}
+	"servers": "Servers (the number /apply took)", "region": "Region (/apply's choice)", "note": "Note",
+	"discord": "your Discord username"}
 
 // Embed colours.
 const (
@@ -219,6 +250,15 @@ func (b *Bot) choose(c Client, i *Interaction) Reply {
 }
 
 func (b *Bot) applyCommand(i *Interaction) Reply {
+	// (the options Discord checked, both required: a number of servers, a
+	// region of the menu's; checked again)
+	servers, err := strconv.Atoi(i.Options[optionServers])
+	region := i.Options[optionRegion]
+	where, ok := regionName(region)
+	if err != nil || servers < 1 || servers > maximumServers || !ok {
+		return ephemeral(fmt.Sprintf("Choose 1 to %d servers, and your servers' region from the menu.",
+			maximumServers))
+	}
 	nonce := b.M.ProofNonce(i.User.ID)
 	proof := "Show that you hold the key: on the server, run"
 	if !b.M.Config.RequireProof {
@@ -231,16 +271,39 @@ func (b *Bot) applyCommand(i *Interaction) Reply {
 		"2. %s\n`halo --server --sign %s`\nand keep what it prints. This nonce is good for 24 hours, for your "+
 		"applications only.\n"+
 		"3. Press **Fill in the application**, and paste the public key and the signature.\n"+
+		"You apply for **%d** %s at once, in **%s** (run `/apply` again to choose otherwise).\n"+
 		"Your server may publish meanwhile: the master tells it `publisher_pending` until an approver decides, "+
 		"and lists it at its next publish after an approval. You are told of the decision by a direct message. "+
-		"The masters share approvals, so one application is enough.", escape(b.M.Name()), proof, nonce)
-	return ephemeral(text, ButtonSpec{ID: idForm + nonce, Label: "Fill in the application", Style: Primary})
+		"The masters share approvals, so one application is enough.", escape(b.M.Name()), proof, nonce,
+		servers, plural(servers, "server", "servers"), where)
+	return ephemeral(text, ButtonSpec{ID: idForm + formState(nonce, servers, region), Label: "Fill in the application",
+		Style: Primary})
+}
+
+// formState is what /apply chose, carried by the form's button and the
+// form's custom ids (Discord's, 100 characters at most): the nonce, the
+// number of servers and the region.
+func formState(nonce string, servers int, region string) string {
+	return nonce + ":" + strconv.Itoa(servers) + ":" + region
+}
+
+// parseFormState reads formState's text. (A nonce alone is a form opened
+// before /apply had its options: no servers, which the master refuses
+// with the advice to run /apply again.)
+func parseFormState(state string) (nonce string, servers int, region string) {
+	parts := strings.Split(state, ":")
+	nonce = parts[0]
+	if len(parts) == 3 {
+		servers, _ = strconv.Atoi(parts[1])
+		region = parts[2]
+	}
+	return nonce, servers, region
 }
 
 // applicationForm is the application's modal, filled in with a refused
 // try's inputs.
-func (b *Bot) applicationForm(userID, nonce string) *Modal {
-	values := map[string]string{inputServers: "1"}
+func (b *Bot) applicationForm(userID, state string) *Modal {
+	values := map[string]string{}
 	b.mu.Lock()
 	if d, ok := b.drafts[userID]; ok && b.M.Now().Sub(d.at) < draftLife {
 		values = d.values
@@ -250,15 +313,13 @@ func (b *Bot) applicationForm(userID, nonce string) *Modal {
 	if !b.M.Config.RequireProof {
 		proofLabel += " (optional)"
 	}
-	form := &Modal{ID: idSubmit + nonce, Title: "Apply to publish servers", Inputs: []Input{
+	form := &Modal{ID: idSubmit + state, Title: "Apply to publish servers", Inputs: []Input{
 		{ID: inputName, Label: "Display name, shown beside your servers", Required: true, Min: 3, Max: 32,
 			Value: values[inputName]},
 		{ID: inputKey, Label: "Public key (halo --server --keygen)", Placeholder: "ed25519:...", Required: true,
 			Max: 100, Value: values[inputKey]},
 		{ID: inputProof, Label: proofLabel, Placeholder: "128 hexadecimal digits", Required: b.M.Config.RequireProof,
 			Max: 200, Value: values[inputProof]},
-		{ID: inputServers, Label: "Servers at once, and a region: 2 eu", Placeholder: "1", Required: true, Max: 24,
-			Value: values[inputServers]},
 		{ID: inputNote, Label: "Note to the approvers (optional)", Long: true, Max: 1000, Value: values[inputNote]},
 	}}
 	// (Discord refuses a form whose value is outside its input's lengths)
@@ -272,31 +333,18 @@ func (b *Bot) applicationForm(userID, nonce string) *Modal {
 }
 
 // submit takes the application form.
-func (b *Bot) submit(i *Interaction, nonce string) Reply {
+func (b *Bot) submit(i *Interaction, state string) Reply {
 	values := map[string]string{}
-	for _, id := range []string{inputName, inputKey, inputProof, inputServers, inputNote} {
+	for _, id := range []string{inputName, inputKey, inputProof, inputNote} {
 		values[id] = i.Values[id]
 	}
+	nonce, servers, region := parseFormState(state)
 	in := core.ApplicationInput{Name: values[inputName], PublicKey: values[inputKey], Note: values[inputNote],
-		DiscordID: i.User.ID, DiscordName: username(i.User.Name)}
+		Servers: servers, Region: region, DiscordID: i.User.ID, DiscordName: username(i.User.Name)}
 	if signature := strings.TrimSpace(values[inputProof]); signature != "" {
 		in.Proof = &core.Proof{Nonce: nonce, Signature: signature}
 	}
-	retry := ButtonSpec{ID: idForm + nonce, Label: "Try again", Style: Primary}
-	fields := strings.Fields(values[inputServers])
-	servers, err := 0, error(nil)
-	if len(fields) > 0 {
-		servers, err = strconv.Atoi(fields[0])
-	}
-	if len(fields) == 0 || len(fields) > 2 || err != nil {
-		b.keepDraft(i.User.ID, values)
-		return ephemeral("Your application was not taken: **Servers and region** is a number of servers at "+
-			"once, then a region if you like (`2 eu`).", retry)
-	}
-	in.Servers = servers
-	if len(fields) == 2 {
-		in.Region = fields[1]
-	}
+	retry := ButtonSpec{ID: idForm + state, Label: "Try again", Style: Primary}
 	a, err := b.M.Apply(in, Actor(i.User))
 	if err != nil {
 		var field *core.FieldError
@@ -305,6 +353,12 @@ func (b *Bot) submit(i *Interaction, nonce string) Reply {
 		switch {
 		case errors.As(err, &limited):
 			return ephemeral("Your application was not taken: " + limited.Message + ". Try again later.")
+		case errors.As(err, &field) && (field.Field == "servers" || field.Field == "region"):
+			// (/apply's options, not the form's: the form again would not
+			// change them)
+			b.keepDraft(i.User.ID, values)
+			return ephemeral(fmt.Sprintf("Your application was not taken: **%s**: %s. Run `/apply` again with "+
+				"other choices: the form keeps what you typed.", fieldLabels[field.Field], field.Message))
 		case errors.As(err, &field):
 			b.keepDraft(i.User.ID, values)
 			text := fmt.Sprintf("Your application was not taken: **%s**: %s.", fieldLabels[field.Field], field.Message)

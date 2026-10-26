@@ -206,12 +206,15 @@ a Discord channel (or on the admin pages). To set it up:
    set them instead, and `/configure` then leaves them as they are. A new
    server id clears them.
 
-The bot registers `/apply`, `/configure` and `/config` in that server only. It answers an applicant
-alone with a nonce for the proof of key (good 24 hours, for that Discord
-user's applications only) and a button that opens the form: a display
-name, the public key, the proof (what `halo --server --sign <nonce>`
-prints), the number of servers at once and a region (one input, `2 eu`:
-a form has 5 inputs at most), and a note. A refused form is answered with
+The bot registers `/apply`, `/configure` and `/config` in that server only.
+`/apply` takes two options, which Discord asks for as the command is
+typed: the region, which must be one of a menu's (Europe, North America
+(east), North America (west), South America, Asia, Oceania, Middle East,
+Africa: `discord.Regions`), and the number of servers at once (1 to 64). It answers an applicant alone with a nonce for the proof of key (good
+24 hours, for that Discord user's applications only), what they chose, and
+a button that opens the form: a display name, the public key, the proof
+(what `halo --server --sign <nonce>` prints), and a note. To choose another
+region or number, they run `/apply` again. A refused form is answered with
 the reason and a button to try again, filled in with what was sent. A
 Discord user has one pending application at a time and
 `MASTER_APPLICATIONS_PER_DAY` a day. Each application is posted to the log
@@ -416,12 +419,12 @@ last. The workflow refuses a key whose signature the masters would refuse.
    `config.toml` and prints its public key (`ed25519:<64 hex>`) and key id.
    The private key never leaves the server.
 2. In the master's Discord server (its `/apply` page links to it), type
-   `/apply`. The bot answers you alone with a nonce: run
+   `/apply`, choose your servers' region from its menu and how many servers
+   run at once. The bot answers you alone with a nonce: run
    `halo --server --sign <nonce>` on the server (required unless the
    master's `MASTER_REQUIRE_PROOF` is off).
 3. Press **Fill in the application**: a display name (shown beside your
-   servers), the public key, what `--sign` printed, how many servers at
-   once and a region (`2 eu`), and a note. The server may publish
+   servers), the public key, what `--sign` printed, and a note. The server may publish
    meanwhile: it is told `publisher_pending` until an approver approves the
    application, and is listed at its next publish after that. The bot tells
    you of the decision by a direct message.

@@ -101,7 +101,18 @@ func TestConvert(t *testing.T) {
 	if err := json.Unmarshal([]byte(payload), &in); err != nil {
 		t.Fatal(err)
 	}
-	if i := convert(&in); i == nil || i.Kind != Command || i.Name != "apply" || i.Admin {
+	if i := convert(&in); i == nil || i.Kind != Command || i.Name != "apply" || i.Admin || len(i.Options) != 0 {
+		t.Fatalf("%+v", i)
+	}
+	// /apply with its options: a choice's value, a whole number
+	payload = `{"id":"1","type":2,"token":"t","guild_id":"1","member":{"user":{"id":"2","username":"a"},"roles":[]},
+		"data":{"id":"9","name":"apply","type":1,"options":[{"name":"region","type":3,"value":"na-east"},
+		{"name":"servers","type":4,"value":12}]}}`
+	in = discordgo.Interaction{}
+	if err := json.Unmarshal([]byte(payload), &in); err != nil {
+		t.Fatal(err)
+	}
+	if i := convert(&in); i == nil || i.Options["region"] != "na-east" || i.Options["servers"] != "12" {
 		t.Fatalf("%+v", i)
 	}
 	// a role select menu's choice, by a member with Manage Server
@@ -195,7 +206,9 @@ func TestGatewayRequests(t *testing.T) {
 	c.mu.Lock()
 	c.answer = `[]`
 	c.mu.Unlock()
-	if err := g.Register("100000000000000001", []CommandSpec{{Name: "apply", Description: "a"},
+	if err := g.Register("100000000000000001", []CommandSpec{{Name: "apply", Description: "a", Options: []OptionSpec{
+		{Name: "region", Description: "r", Required: true, Choices: []Choice{{Name: "Europe", Value: "eu"}}},
+		{Name: "servers", Description: "s", Integer: true, Required: true, Min: 1, Max: 64}}},
 		{Name: "configure", Description: "c", AdminOnly: true}}); err != nil {
 		t.Fatal(err)
 	}
@@ -206,6 +219,18 @@ func TestGatewayRequests(t *testing.T) {
 	if err := json.Unmarshal(raw, &commands); err != nil || len(commands) != 2 ||
 		commands[0]["default_member_permissions"] != nil || commands[1]["default_member_permissions"] != "32" {
 		t.Fatalf("%v %s", err, raw)
+	}
+	// (Discord's option types: 3 a string, 4 an integer; the choices, the bounds)
+	options, _ := commands[0]["options"].([]any)
+	if len(options) != 2 {
+		t.Fatalf("/apply's options sent: %s", raw)
+	}
+	region, servers := options[0].(map[string]any), options[1].(map[string]any)
+	choices, _ := json.Marshal(region["choices"])
+	if region["name"] != "region" || region["type"] != float64(3) || region["required"] != true ||
+		string(choices) != `[{"name":"Europe","value":"eu"}]` || servers["name"] != "servers" ||
+		servers["type"] != float64(4) || servers["min_value"] != float64(1) || servers["max_value"] != float64(64) {
+		t.Fatalf("/apply's options sent: %s", raw)
 	}
 	c.mu.Lock()
 	c.answer = `{"id":"900000000000000001"}`

@@ -551,7 +551,11 @@ func (b *Bot) connect(ctx context.Context, generation uint64, s Settings) {
 func (b *Bot) commands() []CommandSpec {
 	configure := "Choose the channel the applications are posted to, and the roles that decide them"
 	return []CommandSpec{
-		{Name: "apply", Description: "Apply to publish OpenCE dedicated servers on " + b.M.Name()},
+		{Name: "apply", Description: "Apply to publish OpenCE dedicated servers on " + b.M.Name(), Options: []OptionSpec{
+			{Name: optionRegion, Description: "Where your servers are", Required: true, Choices: Regions},
+			{Name: optionServers, Description: fmt.Sprintf("How many servers at once (1 to %d)", maximumServers),
+				Integer: true, Required: true, Min: 1, Max: maximumServers},
+		}},
 		{Name: "configure", Description: configure, AdminOnly: true},
 		{Name: "config", Description: configure, AdminOnly: true},
 	}

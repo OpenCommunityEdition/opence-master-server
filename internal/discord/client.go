@@ -57,6 +57,8 @@ type Interaction struct {
 	Values map[string]string
 	// a select menu's chosen ids
 	Selected []string
+	// a command's options, by name (a whole number's in decimal)
+	Options map[string]string
 	// the message the button is on (or the modal was opened from)
 	MessageID string
 	// the library's interaction, for the reply
@@ -162,6 +164,23 @@ type CommandSpec struct {
 	// shown to the members who may manage the guild only (the bot checks
 	// it again: a guild may change who sees a command)
 	AdminOnly bool
+	Options   []OptionSpec
+}
+
+// OptionSpec is a slash command's option: a string, from a list of choices
+// when it has them (Discord shows them as a menu), or a whole number
+// between Min and Max.
+type OptionSpec struct {
+	Name, Description string
+	Integer           bool
+	Required          bool
+	Choices           []Choice
+	Min, Max          int
+}
+
+// Choice is one of a string option's choices: its words, and its value.
+type Choice struct {
+	Name, Value string
 }
 
 // Client is the bot's connection to Discord.

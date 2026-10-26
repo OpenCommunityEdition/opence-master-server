@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -203,6 +204,20 @@ func (g *gateway) Register(guildID string, commands []CommandSpec) error {
 	for _, c := range commands {
 		command := &discordgo.ApplicationCommand{Name: c.Name, Description: c.Description,
 			Type: discordgo.ChatApplicationCommand}
+		for _, o := range c.Options {
+			option := &discordgo.ApplicationCommandOption{Name: o.Name, Description: o.Description,
+				Type: discordgo.ApplicationCommandOptionString, Required: o.Required}
+			if o.Integer {
+				option.Type = discordgo.ApplicationCommandOptionInteger
+				least := float64(o.Min)
+				option.MinValue, option.MaxValue = &least, float64(o.Max)
+			}
+			for _, choice := range o.Choices {
+				option.Choices = append(option.Choices,
+					&discordgo.ApplicationCommandOptionChoice{Name: choice.Name, Value: choice.Value})
+			}
+			command.Options = append(command.Options, option)
+		}
 		if c.AdminOnly {
 			command.DefaultMemberPermissions = &adminPermissions
 		}
@@ -349,7 +364,16 @@ func convert(in *discordgo.Interaction) *Interaction {
 	}
 	switch in.Type {
 	case discordgo.InteractionApplicationCommand:
-		i.Kind, i.Name = Command, in.ApplicationCommandData().Name
+		data := in.ApplicationCommandData()
+		i.Kind, i.Name, i.Options = Command, data.Name, map[string]string{}
+		for _, o := range data.Options {
+			switch o.Type {
+			case discordgo.ApplicationCommandOptionInteger:
+				i.Options[o.Name] = strconv.FormatInt(o.IntValue(), 10)
+			case discordgo.ApplicationCommandOptionString:
+				i.Options[o.Name] = o.StringValue()
+			}
+		}
 	case discordgo.InteractionMessageComponent:
 		data := in.MessageComponentData()
 		i.Kind, i.CustomID = Button, data.CustomID

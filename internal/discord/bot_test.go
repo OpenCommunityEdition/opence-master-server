@@ -349,9 +349,10 @@ func choice(u discord.User, id string, values ...string) *discord.Interaction {
 		Selected: values}
 }
 
+// command is /apply as u, for 2 servers in eu.
 func command(u discord.User, roles ...string) *discord.Interaction {
 	return &discord.Interaction{Kind: discord.Command, GuildID: guild, ChannelID: "500000000000000001", User: u,
-		Roles: roles, Name: "apply"}
+		Roles: roles, Name: "apply", Options: map[string]string{"region": "eu", "servers": "2"}}
 }
 
 func button(u discord.User, id, message string, roles ...string) *discord.Interaction {
@@ -380,12 +381,12 @@ func apply(t *testing.T, c *fakeConn, u discord.User, key ed25519.PrivateKey, ed
 		t.Fatalf("/apply's text: %s", r.Message.Content)
 	}
 	form := c.do(t, button(u, r.Message.Buttons[0].ID, ""))
-	if form.Modal == nil || len(form.Modal.Inputs) != 5 {
+	if form.Modal == nil || len(form.Modal.Inputs) != 4 {
 		t.Fatalf("the form: %+v", form)
 	}
 	values := map[string]string{"name": "Milenko's servers",
 		"public_key": sign.PublicKeyText(key.Public().(ed25519.PublicKey)),
-		"proof":      hex.EncodeToString(ed25519.Sign(key, []byte(nonce))), "servers": "2 eu", "note": "two CTF servers"}
+		"proof":      hex.EncodeToString(ed25519.Sign(key, []byte(nonce))), "note": "two CTF servers"}
 	if edit != nil {
 		edit(values)
 	}
@@ -420,6 +421,12 @@ func TestApplyFlow(t *testing.T) {
 	if got := c.commands[guild]; len(got) != 3 || got[0].Name != "apply" || got[0].AdminOnly ||
 		got[1].Name != "configure" || !got[1].AdminOnly || got[2].Name != "config" || !got[2].AdminOnly {
 		t.Fatalf("commands registered: %+v", c.commands)
+	}
+	// /apply's region is a menu of choices, its servers a number Discord checks
+	if options := c.commands[guild][0].Options; len(options) != 2 || options[0].Name != "region" ||
+		!options[0].Required || len(options[0].Choices) != len(discord.Regions) || options[1].Name != "servers" ||
+		!options[1].Integer || options[1].Min != 1 || options[1].Max != 64 {
+		t.Fatalf("/apply's options: %+v", options)
 	}
 	if state := h.bot.State(); state.User.Name != "OpenCE Master Bot" {
 		t.Fatalf("state %+v", state)
@@ -484,8 +491,6 @@ func TestSubmitRefusals(t *testing.T) {
 		want  string
 		retry bool
 	}{
-		"servers":   {func(v map[string]string) { v["servers"] = "two" }, "Servers and region", true},
-		"region":    {func(v map[string]string) { v["servers"] = "2 Europe!" }, "Servers and region", true},
 		"name":      {func(v map[string]string) { v["name"] = "ab" }, "Display name", true},
 		"key":       {func(v map[string]string) { v["public_key"] = "ed25519:00" }, "Public key", true},
 		"proof":     {func(v map[string]string) { v["proof"] = strings.Repeat("00", 64) }, "Proof of key", true},
@@ -502,11 +507,22 @@ func TestSubmitRefusals(t *testing.T) {
 		t.Fatalf("%d applications taken", n)
 	}
 	// the next try's form is filled in with the refused one's inputs
-	apply(t, c, applicant, key, func(v map[string]string) { v["servers"] = "two" })
+	apply(t, c, applicant, key, func(v map[string]string) { v["public_key"] = "ed25519:00" })
 	r := c.do(t, command(applicant))
 	form := c.do(t, button(applicant, r.Message.Buttons[0].ID, ""))
-	if form.Modal.Inputs[0].Value != "Milenko's servers" || form.Modal.Inputs[3].Value != "two" {
+	if form.Modal.Inputs[0].Value != "Milenko's servers" || form.Modal.Inputs[1].Value != "ed25519:00" ||
+		form.Modal.Inputs[3].Value != "two CTF servers" {
 		t.Fatalf("the form is not filled in: %+v", form.Modal.Inputs)
+	}
+	// /apply's options out of range (Discord checks them; the bot again)
+	for _, options := range []map[string]string{{"region": "mars", "servers": "2"}, {"region": "eu", "servers": "99"},
+		{"region": "eu", "servers": "0"}} {
+		in := command(applicant)
+		in.Options = options
+		if r := c.do(t, in); r.Message == nil || len(r.Message.Buttons) != 0 ||
+			!strings.Contains(r.Message.Content, "Choose 1 to 64 servers") {
+			t.Errorf("/apply %v: %+v", options, r.Message)
+		}
 	}
 	// a nonce given to another member does not prove this one's key
 	r = c.do(t, command(stranger))
@@ -1239,5 +1255,45 @@ func TestSyncWithoutChannel(t *testing.T) {
 	}
 	if got, _ := h.m.Store.Application("a_queued59"); !got.LogQueued {
 		t.Fatalf("taken off the queue with no channel: %+v", got)
+	}
+}
+
+// /apply's choices reach the application, and its reply says what was
+// chosen; the region is one of the menu's, never none.
+func TestApplyOptions(t *testing.T) {
+	h, c := connected(t, nil)
+	key, _ := sign.NewSeed()
+	in := command(applicant)
+	in.Options = map[string]string{"region": "na-west", "servers": "1"}
+	r := c.do(t, in)
+	if !strings.Contains(r.Message.Content, "**1** server at once, in **North America (west)**") {
+		t.Fatalf("/apply's text: %s", r.Message.Content)
+	}
+	nonce := noncePattern.FindString(r.Message.Content)
+	form := c.do(t, button(applicant, r.Message.Buttons[0].ID, ""))
+	reply := c.do(t, modal(applicant, form.Modal.ID, "", map[string]string{"name": "Milenko's servers",
+		"public_key": sign.PublicKeyText(key.Public().(ed25519.PublicKey)),
+		"proof":      hex.EncodeToString(ed25519.Sign(key, []byte(nonce)))}))
+	if !strings.Contains(reply.Message.Content, "received") {
+		t.Fatalf("the form's reply: %+v", reply.Message)
+	}
+	if a := h.only(model.ApplicationPending); a.Servers != 1 || a.Region != "na-west" {
+		t.Fatalf("stored %+v", a)
+	}
+	// the menu: the eight regions, and no "none"
+	var values []string
+	for _, r := range discord.Regions {
+		values = append(values, r.Value)
+	}
+	if strings.Join(values, ",") != "eu,na-east,na-west,sa,asia,oce,me,africa" {
+		t.Fatalf("the regions: %v", values)
+	}
+	// a region missing, or none of the menu's: refused, with no form
+	for _, options := range []map[string]string{{"servers": "2"}, {"region": "", "servers": "2"},
+		{"region": "any", "servers": "2"}} {
+		in.Options = options
+		if r := c.do(t, in); len(r.Message.Buttons) != 0 || !strings.Contains(r.Message.Content, "region from the menu") {
+			t.Errorf("/apply %v: %+v", options, r.Message)
+		}
 	}
 }
