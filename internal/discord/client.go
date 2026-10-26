@@ -221,6 +221,18 @@ type Error struct {
 
 func (e *Error) Error() string { return e.Message }
 
+// ChannelRefusal tells whether Discord refused a post for the channel's
+// sake rather than the message's: the bot cannot see it or send there (401,
+// 403) or it is gone (404). A permission can be given later, so such a
+// post is worth trying again.
+func ChannelRefusal(err error) bool {
+	var e *Error
+	if !errors.As(err, &e) {
+		return false
+	}
+	return e.Status == 401 || e.Status == 403 || e.Status == 404
+}
+
 // Permanent tells whether an error will not pass by trying again: Discord
 // refused the request (a 4xx other than 429, or a gateway close code for a
 // bad token or intents).

@@ -101,6 +101,8 @@ type fakeConn struct {
 	replyErr error
 	closed   bool
 	next     int
+	// the posts refused with sendErr
+	refused int
 }
 
 func (c *fakeConn) Self() discord.User {
@@ -127,6 +129,7 @@ func (c *fakeConn) Send(channelID string, m discord.Message) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.sendErr != nil {
+		c.refused++
 		return "", c.sendErr
 	}
 	c.next++
@@ -1204,11 +1207,12 @@ func TestSyncPastAPostFailure(t *testing.T) {
 	if got, _ := h.m.Store.Application(b.ID); !got.LogQueued {
 		t.Fatalf("taken off the queue for a passing failure: %+v", got)
 	}
+	// (Discord refusing the message itself, not the channel)
 	c.mu.Lock()
-	c.sendErr = &discord.Error{Status: 403, Message: "Missing Access"}
+	c.sendErr = &discord.Error{Status: 400, Message: "Invalid Form Body"}
 	c.mu.Unlock()
 	h.bot.Sync()
-	if state := h.bot.State(); !strings.Contains(state.SyncError, "Missing Access") {
+	if state := h.bot.State(); !strings.Contains(state.SyncError, "Invalid Form Body") {
 		t.Fatalf("state %+v", state)
 	}
 	if got, _ := h.m.Store.Application(b.ID); got.LogQueued || got.LogMessage != "" ||
@@ -1218,6 +1222,87 @@ func TestSyncPastAPostFailure(t *testing.T) {
 	h.bot.Sync()
 	if state := h.bot.State(); state.SyncError != "" {
 		t.Fatalf("tried again: %+v", state)
+	}
+}
+
+// The log channel refusing a post (the bot not allowed to send there yet,
+// or the channel gone) keeps the application queued: the posts wait
+// PostRetry, and are tried at once after /configure; the applications an
+// older version took off the queue after such a refusal are queued again
+// when the bot connects, but not those past the hour's number.
+func TestSyncChannelRefusal(t *testing.T) {
+	h, c := connected(t, nil)
+	h.m.Watcher = nil
+	before, _, _ := c.counts()
+	c.mu.Lock()
+	c.sendErr = &discord.Error{Status: 403, Message: "Discord answered 403 Forbidden: Missing Permissions"}
+	c.mu.Unlock()
+	key, _ := sign.NewSeed()
+	apply(t, c, applicant, key, nil)
+	h.bot.Sync()
+	a := h.only(model.ApplicationPending)
+	if got, _ := h.m.Store.Application(a.ID); !got.LogQueued || got.LogMessage != "" {
+		t.Fatalf("taken off the queue for the channel's refusal: %+v", got)
+	}
+	if state := h.bot.State(); !strings.Contains(state.SyncError, "Missing Permissions") ||
+		!strings.Contains(state.SyncError, "/configure") {
+		t.Fatalf("state %+v", state)
+	}
+	if _, page := h.get("/admin/discord"); !strings.Contains(page, "Missing Permissions") {
+		t.Fatal("the page does not show the refusal")
+	}
+	// (the permission given in Discord: the post waits for PostRetry)
+	c.mu.Lock()
+	c.sendErr = nil
+	c.mu.Unlock()
+	h.bot.Sync()
+	if sent, _, _ := c.counts(); sent != before {
+		t.Fatalf("posted before PostRetry: %d sent", sent-before)
+	}
+	if state := h.bot.State(); !strings.Contains(state.SyncError, "Missing Permissions") {
+		t.Fatalf("the refusal is not shown while posts wait: %+v", state)
+	}
+	c.mu.Lock()
+	refused := c.refused
+	c.mu.Unlock()
+	if refused != 1 {
+		t.Fatalf("tried again at once: %d refusals", refused)
+	}
+	// /configure, choosing the channel again: tried at once
+	if r := c.do(t, choice(owner, "config:channel", channel)); !r.Update {
+		t.Fatalf("%+v", r)
+	}
+	h.bot.Sync()
+	if got, _ := h.m.Store.Application(a.ID); got.LogMessage == "" || got.LogChannel != channel || got.LogQueued {
+		t.Fatalf("not posted after /configure: %+v", got)
+	}
+	if state := h.bot.State(); state.SyncError != "" {
+		t.Fatalf("state %+v", state)
+	}
+
+	// taken off the queue unposted by an older version, after a refusal;
+	// and one past the hour's number (never queued)
+	for _, b := range []*model.Application{
+		{ID: "a_given_up", Name: "n", KeyID: "k1", Status: model.ApplicationPending, Created: 1,
+			LogStatus: model.ApplicationPending},
+		{ID: "a_not_announced", Name: "n", KeyID: "k2", Status: model.ApplicationPending, Created: 2},
+	} {
+		if err := h.m.Store.CreateApplication(b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if status, _ := h.post("/admin/discord/reconnect", url.Values{}); status != 200 {
+		t.Fatal(status)
+	}
+	h.until("connected again", func() bool {
+		return h.fake.current() != c && h.bot.State().Status == discord.Connected
+	})
+	h.bot.Sync()
+	if got, _ := h.m.Store.Application("a_given_up"); got.LogMessage == "" {
+		t.Fatalf("not queued again: %+v", got)
+	}
+	if got, _ := h.m.Store.Application("a_not_announced"); got.LogQueued || got.LogMessage != "" {
+		t.Fatalf("an application past the hour's number posted: %+v", got)
 	}
 }
 

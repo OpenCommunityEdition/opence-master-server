@@ -231,9 +231,12 @@ message (when their settings allow it). An application is decided once:
 of two decisions at once (two approvers, or Discord and the admin page)
 the second is refused, and a denied application stays denied (an Approve
 button left on an old message is refused). A denial's reason is 300
-characters at most. An application Discord refuses to take in the channel
-(the channel gone, or out of the bot's reach) is not tried again: it is on
-the admin pages, and the bot's admin page shows the error. Past
+characters at most. An application the channel refuses (the bot not
+allowed to see it or send messages and embeds there, or the channel gone)
+stays queued: the bot's admin page shows the error, and the bot tries again
+a minute later, and at once when `/configure` or the admin pages change its
+settings or it connects again. One Discord refuses for its own content is
+not tried again (it is on the admin pages). Past
 `MASTER_APPLICATIONS_PER_HOUR` applications in an hour, the channel is
 alerted once and the next ones that hour are not posted one by one (they
 are on the admin pages). Every decision is in the audit log, with its
