@@ -42,6 +42,7 @@ type Server struct {
 	publishServer  *limit.Limiter
 	lists          *limit.Limiter
 	takenAudits    *limit.Limiter
+	passKey        *limit.Limiter
 
 	cacheMu         sync.Mutex
 	cache           map[string]*signedBody
@@ -61,6 +62,7 @@ func New(m *core.Master, prober *probe.Prober, counters *metrics.Counters, clien
 		publishServer:  limit.New(2, m.Config.PublishInterval, now),
 		lists:          limit.PerMinute(m.Config.ListPerMinute, now).Grouped(netaddr.Group),
 		takenAudits:    limit.New(1, time.Hour, now),
+		passKey:        limit.PerMinute(PassesPerMinute, now),
 		cache:          map[string]*signedBody{},
 	}
 	counters.Define("master_publishes_total", "Publishes, by result (ok, pending, or the error code).", "result")
@@ -105,6 +107,7 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/me", s.me)
 	mux.HandleFunc("GET /v1/master", s.info)
 	mux.HandleFunc("GET /v1/netlist", s.netlist)
+	mux.HandleFunc("GET /v1/pass", s.pass)
 	mux.HandleFunc("/v1/", func(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, http.StatusNotFound, "not_found", "no such endpoint", "")
 	})

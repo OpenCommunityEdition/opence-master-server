@@ -1,0 +1,160 @@
+package web
+
+import "github.com/OpenCommunityEdition/opence-master-server/internal/view"
+
+// narrowCard is a page of one card in the middle of the public layout.
+templ narrowCard(p view.Page) {
+	@layout(p) {
+		<div class="mx-auto max-w-lg space-y-4">
+			@view.Card() {
+				{ children... }
+			}
+		</div>
+	}
+}
+
+// linkPage shows the game's confirmation code and the way to Discord.
+templ linkPage(p view.Page, code, keyID, authorize string) {
+	@narrowCard(p) {
+		@view.CardHeader("Link Discord to the OpenCE game showing "+code, "")
+		<div class="space-y-4 text-sm leading-relaxed">
+			<p class="text-center"><span id="link-code" class="inline-block rounded-lg border border-line bg-fg/5 px-4 py-2 font-mono text-2xl font-semibold tracking-widest">{ code }</span></p>
+			<p>Check that the game in front of you shows this code. If it does not, close this page: someone else's game would get your Discord account.</p>
+			<p class="text-muted">Linking lets you join servers that refuse VPNs, Tor and datacenter addresses while you use one: they let in a player whose Discord account a master vouches for. Discord tells this master your account's id and username, nothing more; this master never sees your Discord password.</p>
+			<a class={ view.ButtonPrimary + " w-full" } href={ templ.URL(authorize) } rel="noopener">Continue with Discord</a>
+			<p class="text-xs text-muted">The game's player key <code>{ keyID }</code>. What this master keeps, and for how long: <a href="/privacy">privacy</a>.</p>
+		</div>
+	}
+}
+
+// linkedPage says the key is linked.
+templ linkedPage(p view.Page, name, code string) {
+	@narrowCard(p) {
+		@view.CardHeader("Linked as "+name+". Go back to the game.", "")
+		<div class="space-y-3 text-sm leading-relaxed text-muted">
+			<p>The game showing <code>{ code }</code> is linked to the Discord account <strong class="text-fg">{ name }</strong>: it gets its pass within a few seconds. You may close this page.</p>
+			<p>A server that asks for it sees your Discord id and username when you join it. To unlink, or to delete everything, use <a href="/link/manage">your linked keys</a>.</p>
+		</div>
+	}
+}
+
+// manageLoginPage asks for a Discord login to list the account's keys.
+templ manageLoginPage(p view.Page, ready bool) {
+	@narrowCard(p) {
+		@view.CardHeader("Your linked game keys", "The OpenCE games you linked to your Discord account on this master.")
+		<div class="space-y-4 text-sm leading-relaxed">
+			if ready {
+				<p class="text-muted">Log in with the Discord account you linked to see its keys, unlink them, or delete everything this master keeps of it.</p>
+				<a class={ view.ButtonPrimary + " w-full" } href="/link/manage/login">Log in with Discord</a>
+			} else {
+				<p class="text-muted">This master's admins have not set up the Discord links: nothing can be linked here.</p>
+			}
+			<p class="text-xs text-muted">What this master keeps: <a href="/privacy">privacy</a>.</p>
+		</div>
+	}
+}
+
+// managePage lists an account's keys, with Unlink and Delete everything.
+templ managePage(p view.Page, d manageView) {
+	@layout(p) {
+		<div class="mx-auto max-w-2xl space-y-6">
+			<div class="flex flex-wrap items-end justify-between gap-4">
+				<div>
+					<h2 class="text-2xl">Your linked game keys</h2>
+					<p class="mt-1 text-sm text-muted">Logged in as <strong class="text-fg">{ d.Name }</strong> (Discord id <code>{ d.DiscordID }</code>).</p>
+				</div>
+				<form method="post" action="/link/manage/logout">
+					@view.CSRF(d.CSRF)
+					<button class={ view.ButtonSecondary + view.ButtonSmall } type="submit">Log out</button>
+				</form>
+			</div>
+			if d.Notice != "" {
+				@view.Alert(view.OK) {
+					{ d.Notice }
+				}
+			}
+			@view.Card() {
+				if len(d.Links) == 0 {
+					@view.Empty("No game key is linked to this account.")
+				} else {
+					<div class={ view.TableWrap }>
+						<table class={ view.Table }>
+							<thead>
+								<tr>
+									<th class={ view.Th }>Key id</th>
+									<th class={ view.Th }>Linked</th>
+									<th class={ view.Th }>Last pass</th>
+									<th class={ view.Th }><span class="sr-only">Unlink</span></th>
+								</tr>
+							</thead>
+							<tbody>
+								for _, l := range d.Links {
+									<tr class={ view.Tr }>
+										<td class={ view.Td }><code>{ l.KeyID }</code></td>
+										<td class={ view.Td + " text-muted" }>{ view.TimeText(l.Created) }</td>
+										<td class={ view.Td + " text-muted" }>{ view.Time(l.LastPass) }</td>
+										<td class={ view.Td + " text-right" }>
+											<form method="post" action="/link/manage/unlink">
+												@view.CSRF(d.CSRF)
+												<input type="hidden" name="key" value={ l.Key }/>
+												<button class={ view.ButtonSecondary + view.ButtonSmall } type="submit">Unlink</button>
+											</form>
+										</td>
+									</tr>
+								}
+							</tbody>
+						</table>
+					</div>
+				}
+			}
+			@view.Card() {
+				@view.CardHeader("Delete everything", "Unlinks every key and deletes what this master keeps of your Discord account. A game that linked it gets no new pass, and its pass runs out.")
+				<form method="post" action="/link/manage/delete">
+					@view.CSRF(d.CSRF)
+					<button class={ view.ButtonDanger } type="submit">Delete everything</button>
+				</form>
+			}
+		</div>
+	}
+}
+
+// privacyPage is what the master keeps of whom, and the netlist's sources.
+templ privacyPage(p view.Page, ttl string) {
+	@layout(p) {
+		<div class="mx-auto max-w-3xl space-y-6">
+			<div>
+				<h2 class="text-2xl">Privacy</h2>
+				<p class="mt-1 text-sm text-muted">{ p.Policy }</p>
+			</div>
+			@view.Card() {
+				@view.CardHeader("Linked Discord accounts", "")
+				<div class="space-y-3 text-sm leading-relaxed">
+					<p>When you link the game to a Discord account here, this master keeps: the public half of the game's player key, the Discord account's id and username, when it was linked and when it last gave the game a pass. It keeps no Discord token (it forgets it once it has the id and username) and no address of yours.</p>
+					<p>The master's admins see these records. They are not shared with other masters. They are deleted when you unlink or delete everything on <a href="/link/manage">your linked keys</a>, or 90 days after the last pass.</p>
+					<p>The game holds a pass the master signs (good { ttl }), which names your Discord account's id and username. The game shows it only to the servers you join that ask for it (servers that refuse VPN, Tor and datacenter addresses), and such a server may ban the account.</p>
+				</div>
+			}
+			@view.Card() {
+				@view.CardHeader("The netlist", "")
+				<div class="space-y-3 text-sm leading-relaxed">
+					<p>This master publishes a signed list of the IPv4 ranges of VPN providers, Tor exits and datacenters (<a href="/v1/netlist">/v1/netlist</a>), built from public lists. Dedicated servers fetch it and check joining players' addresses on their own: no player's address is sent to this master, or to anyone else, to be judged.</p>
+					<p>Its sources, with thanks:</p>
+					<ul class="list-disc space-y-2 pl-5">
+						<li><a href="https://github.com/X4BNet/lists_vpn">X4BNet's lists_vpn</a>: the autonomous systems of hosting providers and VPN providers, and its built lists. MIT licence, whose notice follows.</li>
+						<li><a href="https://iptoasn.com">iptoasn.com</a>'s IP to ASN table, which expands the autonomous systems to their ranges: public domain (PDDL).</li>
+						<li>The Tor Project's list of Tor exits (<a href="https://check.torproject.org/torbulkexitlist">check.torproject.org</a>), public data of the Tor network.</li>
+					</ul>
+					<div class="rounded-lg border border-line bg-fg/[0.03] p-4 text-xs text-muted">
+						<p class="font-medium">lists_vpn: Copyright (c) X4BNet (github.com/X4BNet/lists_vpn)</p>
+						<p class="mt-2">Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:</p>
+						<p class="mt-2">The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.</p>
+						<p class="mt-2">THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.</p>
+					</div>
+				</div>
+			}
+			if p.Contact != "" {
+				<p class="text-sm text-muted">Questions about your data: { p.Contact }.</p>
+			}
+		</div>
+	}
+}

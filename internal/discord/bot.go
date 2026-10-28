@@ -23,6 +23,8 @@ const (
 	keyChannel = "discord.channel"
 	keyRoles   = "discord.roles"
 	keyInvite  = "discord.invite"
+	// the application's OAuth2 client secret, for the player links
+	keySecret = "discord.client_secret"
 )
 
 // MaximumRoles is how many approver roles may be set.
@@ -35,6 +37,7 @@ const Permissions = 1024 | 2048 | 16384
 var (
 	snowflakePattern = regexp.MustCompile(`^[0-9]{17,20}$`)
 	tokenPattern     = regexp.MustCompile(`^[A-Za-z0-9._-]{30,200}$`)
+	secretPattern    = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
 )
 
 // Settings are the bot's settings: the admin page's and /configure's (in
@@ -46,8 +49,10 @@ type Settings struct {
 	Channel string
 	Roles   []string
 	Invite  string
+	// the OAuth2 client secret, for the player links
+	ClientSecret string
 	// the settings the environment sets: "token", "guild", "channel",
-	// "roles", "invite"
+	// "roles", "invite", "secret"
 	FromEnv map[string]bool
 }
 
@@ -57,6 +62,9 @@ type Settings struct {
 type Form struct {
 	Token, Guild, Invite string
 	ClearToken           bool
+	// the OAuth2 client secret: empty keeps the stored one
+	ClientSecret string
+	ClearSecret  bool
 }
 
 // Status is the bot's connection.
@@ -131,7 +139,8 @@ func New(m *core.Master, dial Dialer, log *slog.Logger) *Bot {
 // Settings returns the bot's settings.
 func (b *Bot) Settings() (Settings, error) {
 	s := Settings{FromEnv: map[string]bool{}}
-	stored := map[string]*string{keyToken: &s.Token, keyGuild: &s.Guild, keyChannel: &s.Channel, keyInvite: &s.Invite}
+	stored := map[string]*string{keyToken: &s.Token, keyGuild: &s.Guild, keyChannel: &s.Channel, keyInvite: &s.Invite,
+		keySecret: &s.ClientSecret}
 	var roles string
 	stored[keyRoles] = &roles
 	for key, target := range stored {
@@ -147,7 +156,7 @@ func (b *Bot) Settings() (Settings, error) {
 		target *string
 	}{"token": {cfg.DiscordToken, &s.Token}, "guild": {cfg.DiscordGuild, &s.Guild},
 		"channel": {cfg.DiscordChannel, &s.Channel}, "roles": {cfg.DiscordRoles, &roles},
-		"invite": {cfg.DiscordInvite, &s.Invite}} {
+		"invite": {cfg.DiscordInvite, &s.Invite}, "secret": {cfg.DiscordClientSecret, &s.ClientSecret}} {
 		if env.value != "" {
 			*env.target = env.value
 			s.FromEnv[name] = true
@@ -164,9 +173,14 @@ func splitRoles(text string) []string {
 // CheckEnvironment checks the MASTER_DISCORD_* variables, for serve to
 // refuse bad ones at its start.
 func CheckEnvironment(cfg *config.Config) error {
-	_, err := checkForm(Form{Token: cfg.DiscordToken, Guild: cfg.DiscordGuild, Invite: cfg.DiscordInvite})
+	_, err := checkForm(Form{Token: cfg.DiscordToken, Guild: cfg.DiscordGuild, Invite: cfg.DiscordInvite,
+		ClientSecret: cfg.DiscordClientSecret})
 	if err == nil {
 		err = checkChannel(cfg.DiscordChannel)
+	}
+	if id := strings.TrimSpace(cfg.DiscordClientID); err == nil && id != "" && !snowflakePattern.MatchString(id) {
+		err = errors.New("the client id is the application's id: 17 to 20 digits (the Developer Portal's " +
+			"General Information)")
 	}
 	if err == nil {
 		err = checkRoles(splitRoles(cfg.DiscordRoles))
@@ -206,6 +220,10 @@ func checkForm(f Form) (string, error) {
 	}
 	if id := strings.TrimSpace(f.Guild); id != "" && !snowflakePattern.MatchString(id) {
 		errs = append(errs, errors.New("the server id is a Discord id: 17 to 20 digits (Developer Mode, Copy ID)"))
+	}
+	if secret := strings.TrimSpace(f.ClientSecret); secret != "" && !secretPattern.MatchString(secret) {
+		errs = append(errs, errors.New("the client secret is the Developer Portal's (OAuth2, Client Secret: "+
+			"letters, digits, '_' and '-')"))
 	}
 	if invite := strings.TrimSpace(f.Invite); invite != "" {
 		u, err := url.Parse(invite)
@@ -274,6 +292,20 @@ func (b *Bot) Save(f Form, actor string) error {
 				return err
 			}
 			changes = append(changes, "token set")
+		}
+	}
+	if !current.FromEnv["secret"] {
+		switch {
+		case f.ClearSecret:
+			if err := b.M.Store.SetSetting(keySecret, ""); err != nil {
+				return err
+			}
+			changes = append(changes, "client secret cleared")
+		case strings.TrimSpace(f.ClientSecret) != "":
+			if err := b.M.Store.SetSetting(keySecret, strings.TrimSpace(f.ClientSecret)); err != nil {
+				return err
+			}
+			changes = append(changes, "client secret set")
 		}
 	}
 	detail := "unchanged"
@@ -363,6 +395,31 @@ func (b *Bot) AddURL() string {
 		link += "&guild_id=" + s.Guild + "&disable_guild_select=true"
 	}
 	return link
+}
+
+// LinkSettings is what the player links take of the bot's settings.
+type LinkSettings struct {
+	// the application's id (MASTER_DISCORD_CLIENT_ID, else the bot's, from
+	// Discord or its token) and its OAuth2 client secret
+	ClientID, ClientSecret string
+	// the bot's token and server, for the membership check, and the invite
+	BotToken, Guild, Invite string
+}
+
+// LinkSettings returns the player links' settings.
+func (b *Bot) LinkSettings() LinkSettings {
+	s, _ := b.Settings()
+	id := strings.TrimSpace(b.M.Config.DiscordClientID)
+	if id == "" {
+		b.mu.Lock()
+		id = b.state.ApplicationID
+		b.mu.Unlock()
+	}
+	if id == "" {
+		id = tokenUser(s.Token)
+	}
+	return LinkSettings{ClientID: id, ClientSecret: s.ClientSecret, BotToken: s.Token, Guild: s.Guild,
+		Invite: s.Invite}
 }
 
 // tokenUser is the bot user's id a token starts with (empty if it is not a

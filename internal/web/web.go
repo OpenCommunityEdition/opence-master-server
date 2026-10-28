@@ -1,5 +1,6 @@
-// Package web is the master's public pages: the server list, and how to
-// apply (with the master's Discord bot).
+// Package web is the master's public pages: the server list, how to apply
+// (with the master's Discord bot), the player links' pages (link.go) and
+// what the master keeps (/privacy).
 package web
 
 import (
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/OpenCommunityEdition/opence-master-server/internal/core"
+	"github.com/OpenCommunityEdition/opence-master-server/internal/discord"
 	"github.com/OpenCommunityEdition/opence-master-server/internal/httpx"
 	"github.com/OpenCommunityEdition/opence-master-server/internal/limit"
 	"github.com/OpenCommunityEdition/opence-master-server/internal/netaddr"
@@ -23,10 +25,17 @@ import (
 //go:embed static/style.css
 var Style []byte
 
-// Message is a page of a heading and lines.
+// Message is a page of a heading and lines, and an action (a link) under
+// them.
 type Message struct {
 	Heading string
 	Lines   []string
+	Action  Action
+}
+
+// Action is a message's link, shown as a button (none without an Href).
+type Action struct {
+	Href, Text string
 }
 
 // Pages serves the public pages.
@@ -38,6 +47,14 @@ type Pages struct {
 	Lists *limit.Limiter
 	// the Discord bot, which takes the applications (nil: none)
 	Applying Applying
+	// the Discord bot's settings the player links take (nil: links are not
+	// set up), and Discord's OAuth2
+	Linking Linking
+	OAuth   *discord.OAuth
+
+	// the link pages' requests per address
+	linkLimit *limit.Limiter
+	manageSessions
 }
 
 // Applying is what the /apply page shows of the Discord bot.
@@ -48,16 +65,31 @@ type Applying interface {
 	Accepting() bool
 }
 
+// LinkRate is the link pages' requests a minute per address (the link,
+// Discord's answer, the manage page's login together).
+const LinkRate = 20
+
 // New makes the pages.
 func New(m *core.Master, clients *httpx.Clients) (*Pages, error) {
-	return &Pages{M: m, Clients: clients,
-		Lists: limit.PerMinute(m.Config.ListPerMinute, func() time.Time { return m.Now() }).Grouped(netaddr.Group)}, nil
+	now := func() time.Time { return m.Now() }
+	return &Pages{M: m, Clients: clients, OAuth: discord.NewOAuth(nil),
+		Lists:          limit.PerMinute(m.Config.ListPerMinute, now).Grouped(netaddr.Group),
+		linkLimit:      limit.PerMinute(LinkRate, now).Grouped(netaddr.Group),
+		manageSessions: manageSessions{manage: map[string]*manageSession{}}}, nil
 }
 
 // Routes adds the pages to a mux.
 func (p *Pages) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /{$}", p.index)
 	mux.HandleFunc("GET /apply", p.apply)
+	mux.HandleFunc("GET /link", p.link)
+	mux.HandleFunc("GET /link/callback", p.callback)
+	mux.HandleFunc("GET /link/manage", p.manageGet)
+	mux.HandleFunc("GET /link/manage/login", p.manageLogin)
+	mux.HandleFunc("POST /link/manage/unlink", p.manageUnlink)
+	mux.HandleFunc("POST /link/manage/delete", p.manageDelete)
+	mux.HandleFunc("POST /link/manage/logout", p.manageLogout)
+	mux.HandleFunc("GET /privacy", p.privacy)
 	mux.HandleFunc("GET /static/style.css", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
 		w.Header().Set("Cache-Control", "public, max-age=3600")

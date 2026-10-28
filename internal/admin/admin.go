@@ -113,6 +113,11 @@ func (a *Admin) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/netlist/rebuild", a.guard(a.netlistRebuild))
 	mux.HandleFunc("POST /admin/netlist/publish", a.guard(a.netlistPublish))
 	mux.HandleFunc("POST /admin/netlist/policy", a.guard(a.netlistPolicy))
+	mux.HandleFunc("GET /admin/links", a.guard(a.links))
+	mux.HandleFunc("POST /admin/links/unlink", a.guard(a.unlink))
+	mux.HandleFunc("POST /admin/links/revoke", a.guard(a.revokeLink))
+	mux.HandleFunc("POST /admin/links/lift", a.guard(a.liftRevocation))
+	mux.HandleFunc("POST /admin/discord/clear-secret", a.guard(a.discordClearSecret))
 	mux.HandleFunc("GET /admin/audit", a.guard(a.audit))
 }
 
@@ -540,9 +545,12 @@ func (a *Admin) discordPage(w http.ResponseWriter, r *http.Request, q request) {
 	if err != nil {
 		p.Error = err.Error()
 	}
+	link := a.Discord.LinkSettings()
 	show(w, r, http.StatusOK, discordPage(p, discordView{Available: true, State: a.Discord.State(),
 		TokenSet: settings.Token != "", Guild: settings.Guild, Channel: settings.Channel, Invite: settings.Invite,
-		Roles: roles(settings.Roles), AddURL: a.Discord.AddURL(), FromEnv: settings.FromEnv}))
+		Roles: roles(settings.Roles), AddURL: a.Discord.AddURL(), FromEnv: settings.FromEnv,
+		SecretSet: settings.ClientSecret != "", ClientID: link.ClientID, Redirect: a.M.Link("/link/callback"),
+		PublicURL: a.M.Config.PublicURL != ""}))
 }
 
 func (a *Admin) discordSave(w http.ResponseWriter, r *http.Request, q request) {
@@ -551,8 +559,20 @@ func (a *Admin) discordSave(w http.ResponseWriter, r *http.Request, q request) {
 		return
 	}
 	err := a.Discord.Save(discord.Form{Token: r.FormValue("token"), Guild: r.FormValue("guild"),
-		Invite: r.FormValue("invite")}, "admin")
+		Invite: r.FormValue("invite"), ClientSecret: r.FormValue("client_secret")}, "admin")
 	a.done(w, r, q, "/admin/discord", err, "Saved; the bot connects again.")
+}
+
+func (a *Admin) discordClearSecret(w http.ResponseWriter, r *http.Request, q request) {
+	if a.Discord == nil {
+		a.done(w, r, q, "/admin/discord", errors.New("this master runs no Discord bot"), "")
+		return
+	}
+	settings, err := a.Discord.Settings()
+	if err == nil {
+		err = a.Discord.Save(discord.Form{ClearSecret: true, Guild: settings.Guild, Invite: settings.Invite}, "admin")
+	}
+	a.done(w, r, q, "/admin/discord", err, "The client secret is cleared: the player links are off.")
 }
 
 func (a *Admin) discordClearToken(w http.ResponseWriter, r *http.Request, q request) {

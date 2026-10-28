@@ -1,0 +1,125 @@
+package admin
+
+import (
+	"strconv"
+
+	"github.com/OpenCommunityEdition/opence-master-server/internal/view"
+)
+
+templ linksPage(p view.Page, d linksView) {
+	@layout(p) {
+		@heading("Links", "Player keys linked to Discord accounts (on /link). A linked key gets a pass this master signs, good "+d.PassTTL+", which lets its player in on servers that refuse VPN, Tor and datacenter addresses. An account holds "+strconv.Itoa(d.MaxKeys)+" keys at most; a link unused 90 days is deleted.")
+		@view.Card() {
+			<form method="get" action="/admin/links" class="flex flex-wrap gap-2">
+				<input type="search" name="q" value={ d.Query } placeholder="Discord id, username or key id" aria-label="Search" class={ view.InputInline + " min-w-0 flex-1" }/>
+				<button class={ view.ButtonSecondary } type="submit">Search</button>
+			</form>
+			<div class="mt-5">
+				if len(d.Links) == 0 {
+					if d.Query != "" {
+						@view.Empty("No link matches.")
+					} else {
+						@view.Empty("No key is linked yet.")
+					}
+				} else {
+					<div class={ view.TableWrap }>
+						<table class={ view.Table }>
+							<thead>
+								<tr>
+									<th class={ view.Th }>Account</th>
+									<th class={ view.Th }>Key id</th>
+									<th class={ view.Th }>Linked</th>
+									<th class={ view.Th }>Last pass</th>
+									<th class={ view.Th }><span class="sr-only">Actions</span></th>
+								</tr>
+							</thead>
+							<tbody>
+								for _, l := range d.Links {
+									<tr class={ view.Tr }>
+										<td class={ view.Td }>
+											<div class="font-medium">{ l.DiscordName }</div>
+											<div class="text-xs text-muted"><code>{ l.DiscordID }</code></div>
+											if l.Flags&1 != 0 {
+												@view.Badge(view.OK, "in the Discord server")
+											}
+										</td>
+										<td class={ view.Td }><code>{ l.KeyID }</code></td>
+										<td class={ view.Td + " text-muted" }>{ view.TimeText(l.Created) }</td>
+										<td class={ view.Td + " text-muted" }>{ view.Time(l.LastPass) }</td>
+										<td class={ view.Td }>
+											<div class="flex flex-wrap justify-end gap-2">
+												<form method="post" action="/admin/links/unlink">
+													@view.CSRF(p.CSRF)
+													<input type="hidden" name="key" value={ l.Key }/>
+													<input type="hidden" name="q" value={ d.Query }/>
+													<button class={ view.ButtonSecondary + view.ButtonSmall } type="submit">Unlink</button>
+												</form>
+												<form method="post" action="/admin/links/revoke" class="flex gap-2">
+													@view.CSRF(p.CSRF)
+													<input type="hidden" name="discord_id" value={ l.DiscordID }/>
+													<input type="hidden" name="q" value={ d.Query }/>
+													<input type="text" name="reason" required maxlength="300" placeholder="Reason" aria-label="Reason" class={ view.InputInline + " w-36" }/>
+													<button class={ view.ButtonDanger + view.ButtonSmall } type="submit">Revoke account</button>
+												</form>
+											</div>
+										</td>
+									</tr>
+								}
+							</tbody>
+						</table>
+					</div>
+				}
+			</div>
+		}
+		<div class="grid items-start gap-6 lg:grid-cols-[1fr_24rem]">
+			@view.Card() {
+				@view.CardHeader("Revoked accounts", "A revoked account's keys get 403 link_revoked (with the reason) instead of a pass, and it cannot link again until the revocation is lifted.")
+				if len(d.Revoked) == 0 {
+					@view.Empty("No account is revoked.")
+				} else {
+					<div class={ view.TableWrap }>
+						<table class={ view.Table }>
+							<thead>
+								<tr>
+									<th class={ view.Th }>Account</th>
+									<th class={ view.Th }>Reason</th>
+									<th class={ view.Th }>Revoked</th>
+									<th class={ view.Th }><span class="sr-only">Lift</span></th>
+								</tr>
+							</thead>
+							<tbody>
+								for _, r := range d.Revoked {
+									<tr class={ view.Tr }>
+										<td class={ view.Td }><code>{ r.DiscordID }</code></td>
+										<td class={ view.Td }>{ r.Reason }</td>
+										<td class={ view.Td + " text-muted" }>{ view.TimeText(r.At) }, { r.By }; { strconv.Itoa(r.Keys) } { view.Plural(r.Keys, "key", "keys") }</td>
+										<td class={ view.Td + " text-right" }>
+											<form method="post" action="/admin/links/lift">
+												@view.CSRF(p.CSRF)
+												<input type="hidden" name="discord_id" value={ r.DiscordID }/>
+												<button class={ view.ButtonSecondary + view.ButtonSmall } type="submit">Lift</button>
+											</form>
+										</td>
+									</tr>
+								}
+							</tbody>
+						</table>
+					</div>
+				}
+			}
+			@view.Card() {
+				@view.CardHeader("Revoke an account", "Also one that has linked nothing yet: it will not link.")
+				<form method="post" action="/admin/links/revoke" class="space-y-4">
+					@view.CSRF(p.CSRF)
+					@view.FormField("revoke-id", "Discord id", "Developer Mode on (User Settings, Advanced), right-click the user, Copy User ID.") {
+						<input type="text" id="revoke-id" name="discord_id" required inputmode="numeric" maxlength="20" class={ view.Input }/>
+					}
+					@view.FormField("revoke-reason", "Reason", "Told to the player's game.") {
+						<input type="text" id="revoke-reason" name="reason" required maxlength="300" class={ view.Input }/>
+					}
+					<button class={ view.ButtonDanger } type="submit">Revoke</button>
+				</form>
+			}
+		</div>
+	}
+}

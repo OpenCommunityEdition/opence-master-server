@@ -2,6 +2,7 @@ package admin
 
 import (
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -36,7 +37,39 @@ type discordView struct {
 	Guild, Channel, Invite, Roles, AddURL string
 	// the settings the environment sets
 	FromEnv map[string]bool
+	// the player links: the OAuth2 client secret set, the client's id, the
+	// redirect URI, and whether MASTER_PUBLIC_URL is set
+	SecretSet bool
+	ClientID  string
+	Redirect  string
+	PublicURL bool
 }
+
+// linksReady tells whether the player links are set up.
+func linksReady(d discordView) bool { return d.SecretSet && d.ClientID != "" && d.PublicURL }
+
+func secretHint(d discordView) string {
+	switch {
+	case d.FromEnv["secret"]:
+		return "Set by the environment (MASTER_DISCORD_CLIENT_SECRET)."
+	case d.SecretSet:
+		return "A client secret is set. It is never shown again; type a new one to replace it."
+	}
+	return "None is set: the player links are off. The Developer Portal's OAuth2 page, Client Secret (Reset Secret)."
+}
+
+func secretPlaceholder(d discordView) string {
+	switch {
+	case d.FromEnv["secret"]:
+		return "set by MASTER_DISCORD_CLIENT_SECRET"
+	case d.SecretSet:
+		return "set (leave empty to keep it)"
+	}
+	return "not set"
+}
+
+// urlQuery escapes a query's value.
+func urlQuery(text string) string { return url.QueryEscape(text) }
 
 // envNote says a setting is the environment's (empty if not).
 func envNote(fromEnv bool, variable string) string {

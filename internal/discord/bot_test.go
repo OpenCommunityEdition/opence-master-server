@@ -1297,3 +1297,56 @@ func TestApplyOptions(t *testing.T) {
 		}
 	}
 }
+
+// The OAuth2 client secret (the player links): set on the Discord page,
+// never shown again nor logged nor audited, the environment's winning; the
+// client id is the bot's application's.
+func TestClientSecret(t *testing.T) {
+	h := newHarness(t, nil, nil)
+	const secret = "page-client-secret_0123456789abcdef"
+	form := settings()
+	form.Set("client_secret", secret)
+	if status, _ := h.configure(form); status != 200 {
+		t.Fatal(status)
+	}
+	h.until("connected", func() bool { return h.bot.State().Status == discord.Connected })
+	link := h.bot.LinkSettings()
+	if link.ClientSecret != secret || link.ClientID != "300000000000000009" || link.Guild != guild {
+		t.Fatalf("%+v", link)
+	}
+	_, page := h.get("/admin/discord")
+	if strings.Contains(page, secret) || !strings.Contains(page, "A client secret is set") ||
+		!strings.Contains(page, "/link/callback") {
+		t.Fatalf("the page:\n%s", page)
+	}
+	bad := settings()
+	bad.Set("client_secret", "not a secret!")
+	if status, _ := h.configure(bad); status == 200 {
+		t.Fatal("a malformed secret taken")
+	}
+	if status, _ := h.post("/admin/discord/clear-secret", url.Values{}); status != 200 {
+		t.Fatal(status)
+	}
+	if link := h.bot.LinkSettings(); link.ClientSecret != "" {
+		t.Fatalf("not cleared: %+v", link)
+	}
+	entries, _ := h.m.Store.AuditLog(100, 0)
+	if !strings.Contains(fmt.Sprint(entries), "client secret set") || !strings.Contains(fmt.Sprint(entries),
+		"client secret cleared") || strings.Contains(fmt.Sprint(entries), secret) {
+		t.Fatalf("the audit log: %+v", entries)
+	}
+	if strings.Contains(h.log.String(), secret) {
+		t.Fatal("the secret in the log")
+	}
+	env := newHarness(t, func(cfg *config.Config) {
+		cfg.DiscordClientSecret, cfg.DiscordClientID = "env-client-secret_0123456789", "400000000000000001"
+	}, nil)
+	if link := env.bot.LinkSettings(); link.ClientSecret != "env-client-secret_0123456789" ||
+		link.ClientID != "400000000000000001" {
+		t.Fatalf("%+v", link)
+	}
+	if _, page := env.get("/admin/discord"); strings.Contains(page, "env-client-secret") ||
+		!strings.Contains(page, "set by MASTER_DISCORD_CLIENT_SECRET") {
+		t.Fatalf("the page:\n%s", page)
+	}
+}

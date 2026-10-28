@@ -87,6 +87,16 @@ CREATE TABLE IF NOT EXISTS netlist_published (id INTEGER PRIMARY KEY CHECK (id =
 	generated INTEGER NOT NULL, built INTEGER NOT NULL, body BLOB NOT NULL, signature TEXT NOT NULL,
 	ranges INTEGER NOT NULL, addresses INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS netlist_policy (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS links (key TEXT PRIMARY KEY, key_id TEXT NOT NULL, discord_id TEXT NOT NULL,
+	discord_name TEXT NOT NULL, created INTEGER NOT NULL, last_pass INTEGER NOT NULL, flags INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS links_discord ON links(discord_id);
+CREATE INDEX IF NOT EXISTS links_key_id ON links(key_id);
+CREATE TABLE IF NOT EXISTS link_pending (state TEXT PRIMARY KEY, kind TEXT NOT NULL, key TEXT NOT NULL,
+	ts INTEGER NOT NULL, code TEXT NOT NULL, created INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS link_revoked (discord_id TEXT PRIMARY KEY, reason TEXT NOT NULL, revoked_by TEXT NOT NULL,
+	at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS link_revoked_keys (key TEXT PRIMARY KEY, discord_id TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS link_revoked_keys_discord ON link_revoked_keys(discord_id);
 `
 
 // the indexes on columns a migration may have added
@@ -285,12 +295,16 @@ const (
 	DeniedRetention = 30 * 24 * time.Hour
 	// the audit log's newest entries kept
 	AuditKeep = 100000
+	// a link page's visit waiting for Discord's answer
+	LinkPendingRetention = 10 * time.Minute
+	// a player key's link, from its last pass (or its making)
+	LinkRetention = 90 * 24 * time.Hour
 )
 
 // Purge drops what is kept for a time only: nonces past their window,
 // closed and expired servers, addresses past the address retention,
-// the web form's applications never verified, applications long denied, and the audit log's oldest
-// entries past AuditKeep.
+// the web form's applications never verified, applications long denied, the audit log's oldest
+// entries past AuditKeep, link pages' visits past 10 minutes, and links 90 days unused.
 func (s *Store) Purge(nonceWindow, addressRetention time.Duration) error {
 	now := s.now()
 	seconds := func(d time.Duration) int64 { return int64(d / time.Second) }
@@ -309,6 +323,8 @@ func (s *Store) Purge(nonceWindow, addressRetention time.Duration) error {
 			[]any{now - seconds(UnverifiedRetention)}},
 		{`DELETE FROM applications WHERE status = 'denied' AND updated < ?`, []any{now - seconds(DeniedRetention)}},
 		{`DELETE FROM audit WHERE n <= (SELECT MAX(n) FROM audit) - ?`, []any{s.AuditKeep}},
+		{`DELETE FROM link_pending WHERE created < ?`, []any{now - seconds(LinkPendingRetention)}},
+		{`DELETE FROM links WHERE MAX(last_pass, created) < ?`, []any{now - seconds(LinkRetention)}},
 	} {
 		if _, err := s.db.Exec(statement.query, statement.args...); err != nil {
 			return err

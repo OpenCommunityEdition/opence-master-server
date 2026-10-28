@@ -17,6 +17,7 @@ var sections = []struct{ id, path, name string }{
 	{"servers", "/admin/servers", "Servers"},
 	{"peers", "/admin/peers", "Peers"},
 	{"netlist", "/admin/netlist", "Netlist"},
+	{"links", "/admin/links", "Links"},
 	{"discord", "/admin/discord", "Discord"},
 	{"settings", "/admin/settings", "Settings"},
 	{"audit", "/admin/audit", "Audit log"},
@@ -950,6 +951,18 @@ templ discordPage(p view.Page, d discordView) {
 						@view.FormField("invite", "Public invite URL (optional)", envNote(d.FromEnv["invite"], "MASTER_DISCORD_INVITE")+"Shown on the public /apply page.") {
 							<input type="url" id="invite" name="invite" maxlength="200" placeholder="https://discord.gg/..." value={ d.Invite } disabled?={ d.FromEnv["invite"] } class={ view.Input }/>
 						}
+						@view.FormField("client_secret", "OAuth2 client secret (player links)", secretHint(d)) {
+							<input
+								type="password"
+								id="client_secret"
+								name="client_secret"
+								maxlength="128"
+								autocomplete="off"
+								placeholder={ secretPlaceholder(d) }
+								disabled?={ d.FromEnv["secret"] }
+								class={ view.Input }
+							/>
+						}
 						<div class="flex flex-wrap gap-2 border-t border-line pt-5">
 							<button type="submit" class={ view.ButtonPrimary }>Save and connect</button>
 							if d.AddURL != "" {
@@ -991,6 +1004,39 @@ templ discordPage(p view.Page, d discordView) {
 								<form method="post" action="/admin/discord/clear-token">
 									@view.CSRF(p.CSRF)
 									<button class={ view.ButtonDanger + view.ButtonSmall } type="submit">Clear the token</button>
+								</form>
+							}
+						</div>
+					}
+					@view.Card() {
+						<div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+							<h2>Player links</h2>
+							if linksReady(d) {
+								@view.Badge(view.OK, "set up")
+							} else {
+								@view.Badge(view.Warn, "not set up")
+							}
+						</div>
+						<div class="space-y-3 text-sm leading-relaxed text-muted">
+							<p>Players link their game to their Discord account on <code>/link</code> (the game opens it), with this bot's application as the OAuth2 client (the <code>identify</code> scope only). In the Developer Portal, on the application's OAuth2 page:</p>
+							<ol class="list-decimal space-y-1 pl-5">
+								<li>
+									add the redirect URI
+									if d.PublicURL {
+										<code>{ d.Redirect }</code>
+									} else {
+										<code>&lt;MASTER_PUBLIC_URL&gt;/link/callback</code> (set <code>MASTER_PUBLIC_URL</code> first)
+									}
+								</li>
+								<li>copy the Client Secret into the field beside (or <code>MASTER_DISCORD_CLIENT_SECRET</code>).</li>
+							</ol>
+							if d.ClientID != "" {
+								<p>Client id: <code>{ d.ClientID }</code>.</p>
+							}
+							if d.SecretSet && !d.FromEnv["secret"] {
+								<form method="post" action="/admin/discord/clear-secret">
+									@view.CSRF(p.CSRF)
+									<button class={ view.ButtonDanger + view.ButtonSmall } type="submit">Clear the client secret</button>
 								</form>
 							}
 						</div>

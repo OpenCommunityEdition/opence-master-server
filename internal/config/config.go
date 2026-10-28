@@ -67,6 +67,12 @@ type Config struct {
 	NetlistIPToASNURL   string
 	NetlistListURLs     []string
 	NetlistTorURL       string
+	DiscordClientID     string
+	DiscordClientSecret string
+	LinkRequireGuild    bool
+	LinkMinAccountDays  int
+	LinkMaxKeys         int
+	PassTTL             time.Duration
 }
 
 // Option describes one option, for the flags, the environment and the help.
@@ -76,7 +82,8 @@ type Option struct {
 
 // the secrets: their variables' values are not made their flags' defaults,
 // so the help never shows them
-var secrets = map[string]bool{"MASTER_ADMIN_TOKEN": true, "MASTER_SMTP_PASSWORD": true, "MASTER_DISCORD_TOKEN": true}
+var secrets = map[string]bool{"MASTER_ADMIN_TOKEN": true, "MASTER_SMTP_PASSWORD": true, "MASTER_DISCORD_TOKEN": true,
+	"MASTER_DISCORD_CLIENT_SECRET": true}
 
 // Options is every option, in the help's order.
 var Options = []Option{
@@ -94,6 +101,12 @@ var Options = []Option{
 	{"MASTER_DISCORD_CHANNEL", "discord-channel", "the Discord channel id where the bot posts applications (else chosen with the bot's /configure)", ""},
 	{"MASTER_DISCORD_APPROVER_ROLES", "discord-approver-roles", "the Discord role ids, separated by commas, whose members approve and deny (else chosen with the bot's /configure)", ""},
 	{"MASTER_DISCORD_INVITE", "discord-invite", "an invite to the Discord server, shown on the /apply page (else set on the admin pages)", ""},
+	{"MASTER_DISCORD_CLIENT_ID", "discord-client-id", "the Discord application's id, for the player links' OAuth2 (default: the bot's)", ""},
+	{"MASTER_DISCORD_CLIENT_SECRET", "discord-client-secret", "the Discord application's OAuth2 client secret, for the player links (else set on the admin pages)", ""},
+	{"MASTER_LINK_REQUIRE_GUILD", "link-require-guild", "link only Discord accounts in the bot's Discord server", "false"},
+	{"MASTER_LINK_MIN_ACCOUNT_DAYS", "link-min-account-days", "link only Discord accounts this many days old (0: any)", "0"},
+	{"MASTER_LINK_MAX_KEYS", "link-max-keys", "player keys a Discord account holds at most (a new one drops the least recently used)", "3"},
+	{"MASTER_PASS_TTL", "pass-ttl", "how long a player's pass is good", "72h"},
 	{"MASTER_LISTEN", "listen", "the HTTP listener's address", "127.0.0.1:8090"},
 	{"MASTER_TLS_CERT", "tls-cert", "a certificate file, to serve HTTPS directly", ""},
 	{"MASTER_TLS_KEY", "tls-key", "the certificate's key file", ""},
@@ -202,7 +215,8 @@ func Load(values map[string]*string) (*Config, error) {
 		SMTPAddr: get("MASTER_SMTP_ADDR"), SMTPUser: get("MASTER_SMTP_USER"), SMTPPassword: secret(values, "MASTER_SMTP_PASSWORD"),
 		SMTPTLS: strings.ToLower(get("MASTER_SMTP_TLS")), MailFrom: get("MASTER_MAIL_FROM"), LogLevel: get("MASTER_LOG_LEVEL"),
 		Updates: strings.ToLower(get("MASTER_UPDATES")), UpdateURL: get("MASTER_UPDATE_URL"),
-		UpdateKey: get("MASTER_UPDATE_KEY"),
+		UpdateKey: get("MASTER_UPDATE_KEY"), DiscordClientID: get("MASTER_DISCORD_CLIENT_ID"),
+		DiscordClientSecret: secret(values, "MASTER_DISCORD_CLIENT_SECRET"),
 	}
 	var err error
 	var errs []error
@@ -290,6 +304,23 @@ func Load(values map[string]*string) (*Config, error) {
 		errs = append(errs, errors.New("MASTER_NETLIST_TOR_URL: one URL"))
 	} else if len(one) == 1 {
 		c.NetlistTorURL = one[0]
+	}
+	c.LinkRequireGuild, err = boolean(get("MASTER_LINK_REQUIRE_GUILD"))
+	check(err, "MASTER_LINK_REQUIRE_GUILD")
+	c.LinkMinAccountDays, err = strconv.Atoi(get("MASTER_LINK_MIN_ACCOUNT_DAYS"))
+	check(err, "MASTER_LINK_MIN_ACCOUNT_DAYS")
+	if err == nil && (c.LinkMinAccountDays < 0 || c.LinkMinAccountDays > 3650) {
+		errs = append(errs, errors.New("MASTER_LINK_MIN_ACCOUNT_DAYS: 0 to 3650"))
+	}
+	c.LinkMaxKeys, err = strconv.Atoi(get("MASTER_LINK_MAX_KEYS"))
+	check(err, "MASTER_LINK_MAX_KEYS")
+	if err == nil && (c.LinkMaxKeys < 1 || c.LinkMaxKeys > 16) {
+		errs = append(errs, errors.New("MASTER_LINK_MAX_KEYS: 1 to 16"))
+	}
+	c.PassTTL, err = duration(get("MASTER_PASS_TTL"))
+	check(err, "MASTER_PASS_TTL")
+	if err == nil && (c.PassTTL < time.Hour || c.PassTTL > 30*24*time.Hour) {
+		errs = append(errs, errors.New("MASTER_PASS_TTL: an hour to 30 days"))
 	}
 	if c.PeersInterval < time.Second {
 		errs = append(errs, errors.New("MASTER_PEERS_INTERVAL: at least a second"))

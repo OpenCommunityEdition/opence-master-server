@@ -67,6 +67,12 @@ Usage:
   opence-master resume <publisher>
   opence-master revoke <publisher or key id> [--reason <text>]
   opence-master quota <publisher> <n>
+  opence-master add-link <ed25519:pub> <discord id> <name>
+                                                link a player key to a Discord account (players link on
+                                                /link, with Discord)
+  opence-master revoke-link <discord id> <reason>
+                                                revoke a Discord account: its keys get no pass, and it
+                                                links no more
   opence-master export [--public] [--out <file>]   the publishers (and applications) as JSON
   opence-master import <file>                   merge an export (a backup's, or a peer's)
   opence-master health [--url <url>]           exit 0 if the master's /healthz answers (for containers)
@@ -92,7 +98,7 @@ func main() {
 	case "keygen":
 		err = keygen(args)
 	case "approve", "deny", "suspend", "resume", "revoke", "quota", "list-applications", "list-publishers",
-		"export", "import", "challenge", "add-application":
+		"export", "import", "challenge", "add-application", "add-link", "revoke-link":
 		err = administer(command, args)
 	case "health":
 		err = health(args)
@@ -345,6 +351,7 @@ func serve(args []string) error {
 		return err
 	}
 	adminPages.Discord = bot
+	pages.Linking = bot
 	adminPages.Netlist = lists
 	restarts := make(chan string, 1)
 	updater.Restart = func(binary string) { restarts <- binary }
@@ -503,7 +510,7 @@ func administer(command string, args []string) error {
 		return err
 	}
 	need := map[string]int{"approve": 1, "deny": 1, "suspend": 1, "resume": 1, "revoke": 1, "quota": 2, "import": 1,
-		"challenge": 0, "add-application": 0}
+		"challenge": 0, "add-application": 0, "add-link": 3, "revoke-link": 2}
 	if n, ok := need[command]; ok && len(positional) != n {
 		return usageError{fmt.Errorf("%s takes %d argument(s)", command, n)}
 	}
@@ -525,6 +532,21 @@ func administer(command string, args []string) error {
 			return err
 		}
 		fmt.Printf("application %s: key %s, %s, proof of key %v\n", a.ID, a.KeyID, a.Status, a.ProofOK)
+	case "add-link":
+		public, err := sign.ParsePublicKey(positional[0])
+		if err != nil {
+			return usageError{fmt.Errorf("add-link: %w", err)}
+		}
+		if err := m.SaveLink(public, positional[1], positional[2], 0, actor); err != nil {
+			return err
+		}
+		fmt.Printf("key %s linked to discord:%s %s\n", sign.KeyID(public), positional[1], positional[2])
+	case "revoke-link":
+		n, err := m.RevokeAccount(positional[0], positional[1], actor)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("discord:%s revoked (%d keys unlinked)\n", positional[0], n)
 	case "approve":
 		p, err := m.Approve(positional[0], *quota, actor)
 		if err != nil {
