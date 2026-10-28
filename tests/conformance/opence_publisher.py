@@ -4,7 +4,10 @@
 It does what a dedicated server does with a master, without the game: it
 makes and reads publisher keys, signs requests (OpenCE-Ed25519), builds a
 host-signed listing exactly as the game's p2p_lobby.c (listing_make) does,
-publishes it, answers the master's UDP probe, and checks a signed list.
+publishes it, answers the master's UDP probe, and checks a signed list. It
+also does what the game and a server do with the player links and the
+netlist: a player key's signed queries, reading a pass, the proof at the
+door, and reading a netlist.
 The conformance test (test_master_protocol.py) drives a master with it;
 anyone writing a master or a publisher may use it as a second opinion.
 
@@ -607,6 +610,102 @@ def proof_of_key(seed, nonce):
     whose /apply gives the nonce, or by its operator's `opence-master challenge` and
     `add-application`.)"""
     return sign(seed, nonce.encode("ascii")).hex()
+
+
+# ---------------------------------------------------------------- player keys, links, passes, the netlist
+
+LINK_LABEL = "opence-link-1"
+PASS_GET_LABEL = "opence-pass-get-1"
+PASS_LABEL = b"opence-pass-1"
+PROOF_LABEL = b"opence-pass-proof-1"
+BINDING_LABEL = b"opence-link-binding-1"
+PASS_SIZE = 170
+
+
+def player_signed_text(label, master_key_id, public, ts):
+    """What a player key signs for a link page or a pass request: the label, the master's key id, the
+    public key in hexadecimal and ts, joined by line feeds."""
+    return "\n".join([label, master_key_id, public.hex(), str(ts)])
+
+
+def player_query(seed, label, master_key_id, ts=None):
+    """A player's signed query (GET /link, GET /v1/pass): "key=<64 hex>&ts=<unix>&sig=<128 hex>"."""
+    ts = int(time.time()) if ts is None else ts
+    public = public_key(seed)
+    signature = sign(seed, player_signed_text(label, master_key_id, public, ts).encode("ascii"))
+    return "key=%s&ts=%d&sig=%s" % (public.hex(), ts, signature.hex())
+
+
+def link_code(public, ts):
+    """The link's confirmation code: the first 6 characters of base32 of SHA-256(public key, ts's text),
+    as "ABC-DEF"."""
+    text = base64.b32encode(hashlib.sha256(public + str(ts).encode("ascii")).digest()).decode("ascii")
+    return text[:3] + "-" + text[3:6]
+
+
+def read_pass(data, master_public):
+    """Reads a pass and checks the master's signature (not its times): a dict; raises ValueError."""
+    if len(data) != PASS_SIZE:
+        raise ValueError("a pass is 170 bytes")
+    if data[:8] != b"OPCEPASS" or data[8] != 1:
+        raise ValueError("not an OPCEPASS of format 1")
+    if data[10:18] != key_id_bytes(master_public):
+        raise ValueError("another master's pass")
+    if not verify(master_public, PASS_LABEL + data[:106], data[106:]):
+        raise ValueError("the master's signature does not verify")
+    discord_id, = struct.unpack(">Q", data[50:58])
+    issued, expires = struct.unpack(">QQ", data[90:106])
+    return {"flags": data[9], "player": data[18:50], "discord_id": discord_id,
+            "discord_name": data[58:90].rstrip(b"\0").decode("ascii"), "issued": issued, "expires": expires}
+
+
+def proof_message(pass_bytes, binding):
+    """What the player key signs at a server's door: the label, SHA-256 of the pass, the connection's
+    binding (HMAC-SHA-256 of BINDING_LABEL keyed with the tunnel's session secret; 32 zero bytes on a
+    LAN)."""
+    return PROOF_LABEL + hashlib.sha256(pass_bytes).digest() + binding
+
+
+def read_netlist(body):
+    """Reads a netlist's body as a server does: a dict of generated, serial and ranges ((first, last)
+    addresses as numbers); raises ValueError for a body of the wrong size, magic, format or reserved
+    bytes, or with ranges backwards, out of order, overlapping or touching."""
+    if len(body) < 32 or body[:8] != b"OPCENET1":
+        raise ValueError("not an OPCENET1 body")
+    if body[8] != 1 or body[9:12] != b"\0\0\0":
+        raise ValueError("not format 1, or a reserved byte set")
+    generated, serial, count = struct.unpack(">QQI", body[12:32])
+    if count > 1 << 20 or len(body) != 32 + 8 * count:
+        raise ValueError("the body's size is not its count's")
+    ranges = []
+    for i in range(count):
+        first, last = struct.unpack(">II", body[32 + 8 * i:40 + 8 * i])
+        if first > last:
+            raise ValueError("a range's first address is after its last")
+        if ranges and first <= ranges[-1][1] + 1:
+            raise ValueError("ranges out of order, overlapping or touching")
+        ranges.append((first, last))
+    return {"generated": generated, "serial": serial, "ranges": ranges}
+
+
+def verify_netlist(body, headers, master_public):
+    """Checks a netlist as a server takes it: the master's signature over the exact bytes, Signature-Key
+    its key id, the body as read_netlist reads it. Returns read_netlist's dict; raises ValueError."""
+    value = headers.get("Signature", "")
+    if not value.startswith("ed25519="):
+        raise ValueError("no Signature header")
+    if headers.get("Signature-Key") != key_id(master_public):
+        raise ValueError("Signature-Key is not the master's key id")
+    if not verify(master_public, body, base64.b64decode(value[8:])):
+        raise ValueError("the signature does not verify")
+    netlist = read_netlist(body)
+    if str(netlist["generated"]) != headers.get("Signature-Time"):
+        raise ValueError("Signature-Time is not the body's generated time")
+    return netlist
+
+
+def address_number(text):
+    return struct.unpack(">I", socket.inet_aton(text))[0]
 
 
 # ---------------------------------------------------------------- command line

@@ -7,7 +7,10 @@ application, a pending publish refused, approval on the command line, a
 publish waiting for the probe, the probe answered, the server listed with
 its exact listing bytes in a signed list, closing, the refusals (a bad
 signature, a stale ts, a replayed nonce, quotas, a revoked key), and two
-masters sharing an approval and a revocation.
+masters sharing an approval and a revocation. It also checks the signed
+netlist (a master built from sources on loopback) and the player's pass (a
+link made on the command line, `add-link`, since Discord's OAuth2 is beyond
+a test's reach; `revoke-link` for a revocation).
 
 Applicants apply with a master's Discord bot, which the test cannot reach:
 it makes its applications on the master's command line instead
@@ -17,7 +20,7 @@ checks that the earlier HTTP endpoint answers 410 applications_by_discord.
 The master under test is OPENCE_MASTER_BIN (default: this repository's,
 built with go). Another implementation passes if it takes the same
 command line (keygen --out, serve, challenge, add-application, approve,
-deny, suspend, resume, revoke) and MASTER_* variables.
+deny, suspend, resume, revoke, add-link, revoke-link) and MASTER_* variables.
 
     python3 -m pytest -q tests/conformance
 """
@@ -25,6 +28,8 @@ deny, suspend, resume, revoke) and MASTER_* variables.
 import base64
 import gzip
 import hashlib
+import hmac
+import http.server
 import json
 import os
 import re
@@ -34,6 +39,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 
 import pytest
 
@@ -267,6 +273,55 @@ def test_pure_python_ed25519_agrees():
     assert op.pure_public_key(seed) == op.public_key(seed)
     assert op.pure_sign(seed, message) == op.sign(seed, message)
     assert op.pure_verify(op.public_key(seed), message, op.sign(seed, message))
+
+
+def test_player_pass_and_netlist_vectors():
+    with open(os.path.join(ROOT, "testdata", "vectors.json")) as f:
+        v = json.load(f)
+    master_public = op.parse_public_key(v["master"]["public_key"])
+    seed = bytes.fromhex(v["player"]["seed"])
+    public = op.public_key(seed)
+    assert op.public_key_text(public) == v["player"]["public_key"]
+    assert op.key_id(public) == v["player"]["key_id"] == v["player"]["key_id_bytes"]
+    for name, label in (("link", op.LINK_LABEL), ("pass_request", op.PASS_GET_LABEL)):
+        q = v[name]
+        assert q["master_key_id"] == v["master"]["key_id"]
+        assert op.player_signed_text(label, q["master_key_id"], public, q["ts"]) == q["signed_text"]
+        assert op.player_query(seed, label, q["master_key_id"], int(q["ts"])) == q["query"]
+        assert op.verify(public, q["signed_text"].encode(), bytes.fromhex(q["sig"]))
+    assert op.link_code(public, v["link"]["ts"]) == v["link"]["code"]
+    p = v["pass"]
+    data = bytes.fromhex(p["bytes"])
+    read = op.read_pass(data, master_public)
+    assert (read["flags"], read["player"].hex(), str(read["discord_id"]), read["discord_name"], read["issued"],
+            read["expires"]) == (p["flags"], p["player_public_key"], p["discord_id"], p["discord_name"], p["issued"],
+                                 p["expires"])
+    assert p["expires"] - p["issued"] == 72 * 3600 and p["master_key_id"] == v["master"]["key_id"]
+    assert bytes.fromhex(p["signed_message"]) == op.PASS_LABEL + data[:106]
+    assert bytes.fromhex(p["signature"]) == data[106:]
+    for refused in v["passes_refused"]:
+        with pytest.raises(ValueError):
+            op.read_pass(bytes.fromhex(refused["bytes"]), master_public)
+    proof = v["pass_proof"]
+    secret = bytes.fromhex(proof["session_secret"])
+    binding = hmac.new(secret, op.BINDING_LABEL, hashlib.sha256).digest()
+    assert binding.hex() == proof["binding"] and proof["lan_binding"] == "00" * 32
+    for binding, message, signature in ((binding, proof["message"], proof["proof"]),
+                                        (bytes(32), proof["lan_message"], proof["lan_proof"])):
+        assert op.proof_message(data, binding).hex() == message
+        assert op.sign(seed, bytes.fromhex(message)).hex() == signature
+    n = v["netlist"]
+    body = bytes.fromhex(n["body"])
+    headers = {"Signature": n["signature_header"], "Signature-Key": v["master"]["key_id"],
+               "Signature-Time": str(n["generated"])}
+    netlist = op.verify_netlist(body, headers, master_public)
+    assert netlist["serial"] == n["serial"] and netlist["generated"] == n["generated"]
+    assert netlist["ranges"] == [(op.address_number(a), op.address_number(b)) for a, b in n["ranges"]]
+    assert base64.b64decode(n["signature_header"][8:]).hex() == n["signature"]
+    assert n["etag"] == '"%s"' % hashlib.sha256(body).hexdigest()[:16]
+    for refused in n["refused"]:
+        with pytest.raises(ValueError):
+            op.read_netlist(bytes.fromhex(refused["body"]))
 
 
 # ---------------------------------------------------------------- one master
@@ -612,3 +667,150 @@ def test_two_masters_share_a_suspension(two_masters):
         return status in (200, 202)
 
     assert until(resumed_on_a, 15, 0), "a did not take b's resumption"
+
+
+# ---------------------------------------------------------------- the netlist
+
+class Sources:
+    """The netlist's sources, on loopback: X4BNet's ASN lists and built lists, iptoasn's table, the Tor
+    exits (fixtures of a few ranges each)."""
+
+    FILES = {
+        "/datacenter/ASN.txt": b"AS64500 # a hosting network\n",
+        "/vpn/ASN.txt": b"AS64501 # a VPN provider\n",
+        "/ip2asn-v4.tsv.gz": gzip.compress(b"1.1.1.0\t1.1.1.255\t13335\tUS\tCLOUDFLARENET\n"
+                                           b"1.2.3.0\t1.2.3.255\t64500\tGB\tHOSTING\n"
+                                           b"7.7.7.0\t7.7.7.255\t64999\tUS\tNOT LISTED\n"
+                                           b"45.0.0.0\t45.15.255.255\t64501\tNL\tVPN\n"),
+        "/output/vpn/ipv4.txt": b"185.220.100.0/22\n10.0.0.0/8\n",
+        "/output/datacenter/ipv4.txt": b"5.6.7.8/32\n",
+        "/torbulkexitlist": b"5.6.7.9\n198.51.100.7\n",
+    }
+
+    def __init__(self):
+        files = self.FILES
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = files.get(urllib.parse.urlsplit(self.path).path)
+                self.send_response(200 if body is not None else 404)
+                self.end_headers()
+                self.wfile.write(body or b"")
+
+            def log_message(self, *args):
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = "http://127.0.0.1:%d" % self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def env(self):
+        return {"MASTER_NETLIST": "on",
+                "MASTER_NETLIST_ASN_URLS": self.url + "/datacenter/ASN.txt," + self.url + "/vpn/ASN.txt",
+                "MASTER_NETLIST_IPTOASN_URL": self.url + "/ip2asn-v4.tsv.gz",
+                "MASTER_NETLIST_LIST_URLS": self.url + "/output/vpn/ipv4.txt," + self.url +
+                "/output/datacenter/ipv4.txt",
+                "MASTER_NETLIST_TOR_URL": self.url + "/torbulkexitlist"}
+
+    def close(self):
+        self.server.shutdown()
+
+
+@pytest.fixture(scope="module")
+def netlist_master(binary, tmp_path_factory):
+    sources = Sources()
+    m = Master(binary, str(tmp_path_factory.mktemp("netlist")), "Netlist master").start(**sources.env())
+    yield m
+    m.stop()
+    sources.close()
+
+
+def test_netlist_unavailable(master):
+    # a master with MASTER_NETLIST=off serves none
+    status, headers, data = master.request("GET", "/v1/netlist")
+    answer = json.loads(data)
+    assert status == 503 and code(answer) == "netlist_unavailable" and answer["ok"] is False, answer
+    assert abs(answer["master_time"] - time.time()) < 30
+
+
+def test_netlist(netlist_master):
+    m = netlist_master
+
+    def built():
+        status, headers, data = m.request("GET", "/v1/netlist")
+        return (headers, data) if status == 200 else None
+
+    result = until(built, 20)
+    assert result, "no netlist built: " + open(m.log_path).read()
+    headers, body = result
+    netlist = op.verify_netlist(body, headers, m.public)
+    assert abs(netlist["generated"] - time.time()) < 60 and netlist["serial"] >= 1
+    # AS64500 and AS64501 expanded with iptoasn, AS13335 (the master's own by default), the built lists
+    # (10.0.0.0/8 is not global), and the Tor exits (198.51.100.7 is not global; 5.6.7.9 merges with 5.6.7.8)
+    want = [("1.1.1.0", "1.1.1.255"), ("1.2.3.0", "1.2.3.255"), ("5.6.7.8", "5.6.7.9"),
+            ("45.0.0.0", "45.15.255.255"), ("185.220.100.0", "185.220.103.255")]
+    assert netlist["ranges"] == [(op.address_number(a), op.address_number(b)) for a, b in want], netlist
+    assert len(body) == 32 + 8 * len(want)
+    assert headers.get("Content-Type") == "application/octet-stream"
+    assert headers.get("Cache-Control") == "public, max-age=300"
+    assert headers.get("Access-Control-Allow-Origin") == "*"
+    etag = headers.get("ETag")
+    assert etag == '"%s"' % hashlib.sha256(body).hexdigest()[:16]
+    status, _, _ = m.request("GET", "/v1/netlist", headers={"If-None-Match": etag})
+    assert status == 304
+    status, zipped_headers, zipped = m.request("GET", "/v1/netlist", headers={"Accept-Encoding": "gzip"})
+    assert status == 200 and zipped_headers.get("Content-Encoding") == "gzip"
+    assert gzip.decompress(zipped) == body
+    op.verify_netlist(gzip.decompress(zipped), zipped_headers, m.public)
+
+
+# ---------------------------------------------------------------- the player's pass
+
+def test_pass(master):
+    seed = op.new_seed()
+    public = op.public_key(seed)
+
+    def ask(ts=None, key_seed=seed, label=op.PASS_GET_LABEL, master_key_id=None):
+        query = op.player_query(key_seed, label, master_key_id or master.key_id, ts)
+        status, headers, data = master.request("GET", "/v1/pass?" + query)
+        assert headers.get("Access-Control-Allow-Origin") == "*" and headers.get("Cache-Control") == "no-store"
+        return status, headers, data
+
+    status, _, data = ask()
+    assert status == 404 and code(json.loads(data)) == "not_linked", data
+    # linked on the command line (players link with Discord, on /link)
+    out = master.cli("add-link", op.public_key_text(public), "80351110224678912", "nelly")
+    assert op.key_id(public) in out
+    status, headers, data = ask()
+    assert status == 200 and headers.get("Content-Type") == "application/octet-stream", data
+    p = op.read_pass(data, master.public)
+    assert p["player"] == public and p["discord_id"] == 80351110224678912 and p["discord_name"] == "nelly"
+    assert abs(p["issued"] - time.time()) < 30 and p["expires"] - p["issued"] == 72 * 3600
+    # refusals: a bad signature (another master's, another label's, malformed), a stale ts
+    status, _, data = ask(master_key_id="0123456789abcdef")
+    assert status == 401 and code(json.loads(data)) == "bad_signature", data
+    status, _, data = ask(label=op.LINK_LABEL)
+    assert status == 401 and code(json.loads(data)) == "bad_signature", data
+    status, _, data = master.request("GET", "/v1/pass?key=%s&ts=%d&sig=00" % (public.hex(), time.time()))
+    assert status == 401 and code(json.loads(data)) == "bad_signature", data
+    status, _, data = ask(ts=int(time.time()) - 400)
+    answer = json.loads(data)
+    assert status == 401 and code(answer) == "clock" and abs(answer["master_time"] - time.time()) < 30, answer
+    # revoked: the reason in the message
+    master.cli("revoke-link", "80351110224678912", "conformance revocation")
+    status, _, data = ask()
+    answer = json.loads(data)
+    assert status == 403 and code(answer) == "link_revoked", answer
+    assert answer["error"]["message"] == "conformance revocation"
+
+
+def test_link_pages(master):
+    # the link page takes the game's signed query; this master has no Discord client secret, so it says
+    # linking is not set up and names the fix
+    seed = op.new_seed()
+    status, headers, data = master.request("GET", "/link?" + op.player_query(seed, op.LINK_LABEL, master.key_id))
+    assert status == 503 and b"MASTER_DISCORD_CLIENT_SECRET" in data and b"/link/callback" in data
+    assert "default-src 'self'" in headers.get("Content-Security-Policy", "")
+    for path in ("/privacy", "/link/manage"):
+        status, _, data = master.request("GET", path)
+        assert status == 200 and b"<html" in data, path

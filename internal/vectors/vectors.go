@@ -6,15 +6,19 @@
 package vectors
 
 import (
+	"bytes"
 	"crypto/ed25519"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"net/netip"
 	"strconv"
 	"time"
 
 	"github.com/OpenCommunityEdition/opence-master-server/internal/listing"
+	"github.com/OpenCommunityEdition/opence-master-server/internal/netlist"
 	"github.com/OpenCommunityEdition/opence-master-server/internal/probe"
 	"github.com/OpenCommunityEdition/opence-master-server/internal/sign"
 )
@@ -105,6 +109,78 @@ type File struct {
 	SmallOrderKey string          `json:"small_order_key_refused"`
 	ProofNonce    string          `json:"proof_nonce"`
 	ProofSig      string          `json:"proof_signature_hex"`
+	Player        Key             `json:"player"`
+	Link          PlayerQuery     `json:"link"`
+	PassRequest   PlayerQuery     `json:"pass_request"`
+	Pass          PassVector      `json:"pass"`
+	PassProof     PassProof       `json:"pass_proof"`
+	PassesRefused []RefusedPass   `json:"passes_refused"`
+	Netlist       NetlistVector   `json:"netlist"`
+}
+
+// PlayerQuery is a player key's signed query: a link page's, or a pass
+// request's (Code: the link's confirmation code only).
+type PlayerQuery struct {
+	MasterKeyID string `json:"master_key_id"`
+	TS          string `json:"ts"`
+	SignedText  string `json:"signed_text"`
+	Sig         string `json:"sig"`
+	Query       string `json:"query"`
+	Code        string `json:"code,omitempty"`
+}
+
+// PassVector is a pass, its fields and the message the master signed.
+type PassVector struct {
+	Flags           int    `json:"flags"`
+	MasterKeyID     string `json:"master_key_id"`
+	PlayerPublicKey string `json:"player_public_key"`
+	// decimal: a JSON number would not hold a snowflake in every reader
+	DiscordID     string `json:"discord_id"`
+	DiscordName   string `json:"discord_name"`
+	Issued        int64  `json:"issued"`
+	Expires       int64  `json:"expires"`
+	SignedMessage string `json:"signed_message"`
+	Signature     string `json:"signature"`
+	Bytes         string `json:"bytes"`
+}
+
+// PassProof is the proof at a server's door: through the tunnel (its
+// session secret's binding), and on a LAN (a binding of zeros).
+type PassProof struct {
+	SessionSecret string `json:"session_secret"`
+	Binding       string `json:"binding"`
+	Message       string `json:"message"`
+	Proof         string `json:"proof"`
+	LANBinding    string `json:"lan_binding"`
+	LANMessage    string `json:"lan_message"`
+	LANProof      string `json:"lan_proof"`
+}
+
+// RefusedPass is a pass a server must refuse.
+type RefusedPass struct {
+	Name  string `json:"name"`
+	Bytes string `json:"bytes"`
+	Why   string `json:"why"`
+}
+
+// NetlistVector is a netlist: its ranges, body and headers, and bodies a
+// reader must refuse.
+type NetlistVector struct {
+	Ranges          [][2]string      `json:"ranges"`
+	Generated       uint64           `json:"generated"`
+	Serial          uint64           `json:"serial"`
+	Body            string           `json:"body"`
+	Signature       string           `json:"signature"`
+	SignatureHeader string           `json:"signature_header"`
+	ETag            string           `json:"etag"`
+	Refused         []RefusedNetlist `json:"refused"`
+}
+
+// RefusedNetlist is a netlist body a reader must refuse.
+type RefusedNetlist struct {
+	Name string `json:"name"`
+	Body string `json:"body"`
+	Why  string `json:"why"`
 }
 
 func seed(hexText string) ed25519.PrivateKey {
@@ -150,6 +226,17 @@ func listingVector(description string, host ed25519.PrivateKey, f listing.Fields
 		v.Signature = hex.EncodeToString(l.Signature)
 	}
 	return v
+}
+
+// Marshal writes the vectors as the file holds them: indented, ASCII, with
+// '&' as it is (not escaped for HTML, as a query has it).
+func Marshal(f File) ([]byte, error) {
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	encoder.SetIndent("", "  ")
+	err := encoder.Encode(f)
+	return buffer.Bytes(), err
 }
 
 // Generate makes the vectors.
@@ -204,6 +291,10 @@ func Generate() File {
 	digest := sha256.Sum256(listBody)
 
 	proofNonce := "opence-apply-1760900000-0123456789abcdef"
+	player := seed(PlayerSeed)
+	pass := sign.Pass{Flags: sign.PassFlagGuild, MasterKeyID: masterID, Player: player.Public().(ed25519.PublicKey),
+		DiscordID: 80351110224678912, DiscordName: "nelly", Issued: 1760900200, Expires: 1760900200 + 259200}
+	passBytes := sign.MakePass(master, pass)
 	return File{
 		Comment: "OpenCE master protocol v1 test vectors (docs/master_protocol.md). Hex is lowercase; " +
 			"strings are ASCII. Made by github.com/OpenCommunityEdition/opence-master-server/internal/vectors.",
@@ -228,7 +319,130 @@ func Generate() File {
 		SmallOrderKey: sign.PublicKeyPrefix + "0100000000000000000000000000000000000000000000000000000000000000",
 		ProofNonce:    proofNonce,
 		ProofSig:      hex.EncodeToString(ed25519.Sign(publisher, []byte(proofNonce))),
+		Player:        key(player),
+		Link:          playerQuery(player, sign.LinkLabel, masterKey.KeyID, 1760900100, true),
+		PassRequest:   playerQuery(player, sign.PassGetLabel, masterKey.KeyID, 1760900200, false),
+		Pass:          passVector(master, pass, passBytes),
+		PassProof:     passProof(player, passBytes),
+		PassesRefused: refusedPasses(master, publisher, pass, passBytes),
+		Netlist:       netlistVector(master),
 	}
+}
+
+// PlayerSeed is the vectors' player key's seed.
+const PlayerSeed = "8b8d38ea4ccbb4f2a3fbd5a1c6b4a2b8a9e5b7c7d1f0e3a2b4c6d8e0f1a3b5c7"
+
+func playerQuery(player ed25519.PrivateKey, label, masterKeyID string, ts int64, link bool) PlayerQuery {
+	public := player.Public().(ed25519.PublicKey)
+	text := strconv.FormatInt(ts, 10)
+	signed := sign.PlayerSignedText(label, masterKeyID, hex.EncodeToString(public), text)
+	q := PlayerQuery{MasterKeyID: masterKeyID, TS: text, SignedText: signed,
+		Sig: hex.EncodeToString(ed25519.Sign(player, []byte(signed))), Query: sign.SignPlayerQuery(player, label,
+			masterKeyID, ts)}
+	if link {
+		q.Code = sign.LinkCode(public, text)
+	}
+	return q
+}
+
+func passVector(master ed25519.PrivateKey, p sign.Pass, b []byte) PassVector {
+	return PassVector{Flags: int(p.Flags), MasterKeyID: hex.EncodeToString(p.MasterKeyID[:]),
+		PlayerPublicKey: hex.EncodeToString(p.Player), DiscordID: strconv.FormatUint(p.DiscordID, 10),
+		DiscordName: p.DiscordName, Issued: p.Issued, Expires: p.Expires,
+		SignedMessage: hex.EncodeToString(sign.PassMessage(b[:sign.PassSigned])),
+		Signature:     hex.EncodeToString(b[sign.PassSigned:]), Bytes: hex.EncodeToString(b)}
+}
+
+// proofMessage is what the player key signs at a server's door: the label,
+// SHA-256 of the pass, and the connection's binding.
+func proofMessage(pass, binding []byte) []byte {
+	digest := sha256.Sum256(pass)
+	return append(append([]byte(sign.ProofLabel), digest[:]...), binding...)
+}
+
+func passProof(player ed25519.PrivateKey, pass []byte) PassProof {
+	secret := make([]byte, 32)
+	for i := range secret {
+		secret[i] = byte(i)
+	}
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(sign.BindingLabel))
+	binding := mac.Sum(nil)
+	lan := make([]byte, 32)
+	message, lanMessage := proofMessage(pass, binding), proofMessage(pass, lan)
+	return PassProof{SessionSecret: hex.EncodeToString(secret), Binding: hex.EncodeToString(binding),
+		Message: hex.EncodeToString(message), Proof: hex.EncodeToString(ed25519.Sign(player, message)),
+		LANBinding: hex.EncodeToString(lan), LANMessage: hex.EncodeToString(lanMessage),
+		LANProof: hex.EncodeToString(ed25519.Sign(player, lanMessage))}
+}
+
+// resign signs a pass's first 106 bytes again with a key.
+func resign(key ed25519.PrivateKey, b []byte) []byte {
+	out := append([]byte(nil), b...)
+	copy(out[sign.PassSigned:], ed25519.Sign(key, sign.PassMessage(out[:sign.PassSigned])))
+	return out
+}
+
+func refusedPasses(master, publisher ed25519.PrivateKey, p sign.Pass, b []byte) []RefusedPass {
+	altered := append([]byte(nil), b...)
+	altered[57] ^= 0x01
+	magic := append([]byte(nil), b...)
+	magic[7] = 'X'
+	format := append([]byte(nil), b...)
+	format[8] = 2
+	other := append([]byte(nil), b...)
+	publisherID := sign.KeyIDBytes(publisher.Public().(ed25519.PublicKey))
+	copy(other[10:18], publisherID[:])
+	return []RefusedPass{
+		{"altered discord id", hex.EncodeToString(altered),
+			"the Discord id's last byte changed after signing: the master's signature fails"},
+		{"wrong magic", hex.EncodeToString(resign(master, magic)), "OPCEPASX, not OPCEPASS (signed again by the master)"},
+		{"format 2", hex.EncodeToString(resign(master, format)), "format 2, not 1 (signed again by the master)"},
+		{"signed by the publisher key", hex.EncodeToString(resign(publisher, b)),
+			"signed by the vectors' publisher key instead of the master key: the master's signature fails"},
+		{"another master's key id", hex.EncodeToString(resign(master, other)),
+			"its master key id is the publisher key's, not a pinned master's (signed by the master)"},
+		{"truncated", hex.EncodeToString(b[:sign.PassSize-1]), "169 bytes, not 170"},
+	}
+}
+
+func netlistVector(master ed25519.PrivateKey) NetlistVector {
+	texts := [][2]string{{"1.2.3.0", "1.2.3.255"}, {"5.6.7.8", "5.6.7.8"}, {"45.0.0.0", "45.15.255.255"},
+		{"185.220.100.0", "185.220.103.255"}}
+	var ranges []netlist.Range
+	for _, t := range texts {
+		first, _ := netlist.Number(netip.MustParseAddr(t[0]))
+		last, _ := netlist.Number(netip.MustParseAddr(t[1]))
+		ranges = append(ranges, netlist.Range{First: first, Last: last})
+	}
+	const generated, serial = 1760900000, 7
+	body := netlist.Encode(ranges, generated, serial)
+	header := sign.SignBody(master, body)
+	signature, _ := base64.StdEncoding.DecodeString(header[len("ed25519="):])
+	r := func(first, last string) netlist.Range {
+		f, _ := netlist.Number(netip.MustParseAddr(first))
+		l, _ := netlist.Number(netip.MustParseAddr(last))
+		return netlist.Range{First: f, Last: l}
+	}
+	bad := func(change func([]byte) []byte) string {
+		return hex.EncodeToString(change(append([]byte(nil), body...)))
+	}
+	encode := func(list ...netlist.Range) string { return hex.EncodeToString(netlist.Encode(list, generated, serial)) }
+	return NetlistVector{Ranges: texts, Generated: generated, Serial: serial, Body: hex.EncodeToString(body),
+		Signature: hex.EncodeToString(signature), SignatureHeader: header, ETag: netlist.ETag(body),
+		Refused: []RefusedNetlist{
+			{"overlapping", encode(r("1.2.3.0", "1.2.3.255"), r("1.2.3.128", "1.2.4.10")),
+				"the second range starts inside the first"},
+			{"touching", encode(r("1.2.3.0", "1.2.3.255"), r("1.2.4.0", "1.2.4.255")),
+				"the second range starts right after the first: merged lists never touch"},
+			{"out of order", encode(r("5.6.7.8", "5.6.7.8"), r("1.2.3.0", "1.2.3.255")), "the ranges are not ascending"},
+			{"wrong size", bad(func(b []byte) []byte { return b[:len(b)-1] }),
+				"a byte short of 32 + 8 * count"},
+			{"reserved byte set", bad(func(b []byte) []byte { b[10] = 1; return b }), "byte 10 (reserved) is not zero"},
+			{"wrong magic", bad(func(b []byte) []byte { b[0] = 'X'; return b }), "XPCENET1, not OPCENET1"},
+			{"format 2", bad(func(b []byte) []byte { b[8] = 2; return b }), "format 2, not 1"},
+			{"first after last", encode(r("1.2.3.255", "1.2.3.0")), "the range's first address is after its last"},
+		}}
 }
 
 // SealedToken is the password listing's sealed token: nonce 0x02 * 24, then
