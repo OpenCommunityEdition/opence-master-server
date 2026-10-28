@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -59,6 +60,13 @@ type Config struct {
 	UpdateURL           string
 	UpdateKey           string
 	UpdateInterval      time.Duration
+	Netlist             bool
+	NetlistInterval     time.Duration
+	NetlistTorInterval  time.Duration
+	NetlistASNURLs      []string
+	NetlistIPToASNURL   string
+	NetlistListURLs     []string
+	NetlistTorURL       string
 }
 
 // Option describes one option, for the flags, the environment and the help.
@@ -119,7 +127,26 @@ var Options = []Option{
 	{"MASTER_UPDATE_URL", "update-url", "the latest release, on GitHub's API (a fork's)",
 		"https://api.github.com/repos/OpenCommunityEdition/opence-master-server/releases/latest"},
 	{"MASTER_UPDATE_KEY", "update-key", "the release key's public key, 64 hex digits (a fork's; default the project's)", ""},
+	{"MASTER_NETLIST", "netlist", "build and serve the netlist (GET /v1/netlist): on or off", "on"},
+	{"MASTER_NETLIST_INTERVAL", "netlist-interval", "how often the netlist's sources are fetched (but Tor's)", "24h"},
+	{"MASTER_NETLIST_TOR_INTERVAL", "netlist-tor-interval", "how often the Tor exits are fetched", "1h"},
+	{"MASTER_NETLIST_ASN_URLS", "netlist-asn-urls", "lists of autonomous systems (\"AS<n>\" a line), separated by " +
+		"commas, expanded to their ranges with iptoasn (empty: none)", DefaultASNURLs},
+	{"MASTER_NETLIST_IPTOASN_URL", "netlist-iptoasn-url", "iptoasn.com's ip2asn-v4.tsv.gz (empty: none)",
+		"https://iptoasn.com/data/ip2asn-v4.tsv.gz"},
+	{"MASTER_NETLIST_LIST_URLS", "netlist-list-urls", "lists of IPv4 CIDRs (one a line), separated by commas, " +
+		"taken whole (empty: none)", DefaultListURLs},
+	{"MASTER_NETLIST_TOR_URL", "netlist-tor-url", "the Tor exits' addresses, one a line (empty: none)",
+		"https://check.torproject.org/torbulkexitlist"},
 }
+
+// The netlist's default sources (X4BNet's lists_vpn, MIT).
+const (
+	DefaultASNURLs = "https://raw.githubusercontent.com/X4BNet/lists_vpn/main/input/datacenter/ASN.txt," +
+		"https://raw.githubusercontent.com/X4BNet/lists_vpn/main/input/vpn/ASN.txt"
+	DefaultListURLs = "https://raw.githubusercontent.com/X4BNet/lists_vpn/main/output/vpn/ipv4.txt," +
+		"https://raw.githubusercontent.com/X4BNet/lists_vpn/main/output/datacenter/ipv4.txt"
+)
 
 // Flags adds every option to a flag set, its default from the environment.
 func Flags(set *flag.FlagSet) map[string]*string {
@@ -233,6 +260,37 @@ func Load(values map[string]*string) (*Config, error) {
 	if c.SMTPTLS == "none" && c.SMTPAddr != "" && !loopbackHost(c.SMTPAddr) {
 		errs = append(errs, errors.New("MASTER_SMTP_TLS: none only for an SMTP server on loopback"))
 	}
+	c.Netlist, err = boolean(get("MASTER_NETLIST"))
+	check(err, "MASTER_NETLIST")
+	c.NetlistInterval, err = duration(get("MASTER_NETLIST_INTERVAL"))
+	check(err, "MASTER_NETLIST_INTERVAL")
+	if err == nil && c.NetlistInterval < time.Hour {
+		errs = append(errs, errors.New("MASTER_NETLIST_INTERVAL: an hour at least"))
+	}
+	c.NetlistTorInterval, err = duration(get("MASTER_NETLIST_TOR_INTERVAL"))
+	check(err, "MASTER_NETLIST_TOR_INTERVAL")
+	if err == nil && c.NetlistTorInterval < 5*time.Minute {
+		errs = append(errs, errors.New("MASTER_NETLIST_TOR_INTERVAL: 5 minutes at least"))
+	}
+	c.NetlistASNURLs, err = sourceURLs(get("MASTER_NETLIST_ASN_URLS"))
+	check(err, "MASTER_NETLIST_ASN_URLS")
+	c.NetlistListURLs, err = sourceURLs(get("MASTER_NETLIST_LIST_URLS"))
+	check(err, "MASTER_NETLIST_LIST_URLS")
+	var one []string
+	one, err = sourceURLs(get("MASTER_NETLIST_IPTOASN_URL"))
+	check(err, "MASTER_NETLIST_IPTOASN_URL")
+	if len(one) > 1 {
+		errs = append(errs, errors.New("MASTER_NETLIST_IPTOASN_URL: one URL"))
+	} else if len(one) == 1 {
+		c.NetlistIPToASNURL = one[0]
+	}
+	one, err = sourceURLs(get("MASTER_NETLIST_TOR_URL"))
+	check(err, "MASTER_NETLIST_TOR_URL")
+	if len(one) > 1 {
+		errs = append(errs, errors.New("MASTER_NETLIST_TOR_URL: one URL"))
+	} else if len(one) == 1 {
+		c.NetlistTorURL = one[0]
+	}
 	if c.PeersInterval < time.Second {
 		errs = append(errs, errors.New("MASTER_PEERS_INTERVAL: at least a second"))
 	}
@@ -257,6 +315,23 @@ func (c *Config) CheckServe() error {
 		errs = append(errs, errors.New("MASTER_NAME: 64 characters at most"))
 	}
 	return errors.Join(errs...)
+}
+
+// sourceURLs reads URLs separated by commas: https, or http to loopback.
+func sourceURLs(text string) ([]string, error) {
+	var out []string
+	for _, part := range strings.Split(text, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		u, err := url.Parse(part)
+		if err != nil || u.Host == "" || (u.Scheme != "https" && (u.Scheme != "http" || !loopbackHost(u.Host))) {
+			return nil, fmt.Errorf("%q is not an https:// URL (http:// only to loopback)", part)
+		}
+		out = append(out, part)
+	}
+	return out, nil
 }
 
 func loopbackHost(hostPort string) bool {

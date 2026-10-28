@@ -1,6 +1,6 @@
 // Package admin is the master's admin pages: applications, publishers and
-// their keys, servers (hidden and trusted), peers, the Discord bot's
-// settings, the master's name and contact, and the audit log. An admin logs
+// their keys, servers (hidden and trusted), peers, the netlist, the player
+// keys' links, the Discord bot's settings, the master's name and contact, and the audit log. An admin logs
 // in with the admin token (a session cookie follows), or a script sends it
 // as "Authorization: Bearer <token>". The token is MASTER_ADMIN_TOKEN, else
 // the one the first launch's setup made (setup.go). Every action goes to the
@@ -25,6 +25,7 @@ import (
 	"github.com/OpenCommunityEdition/opence-master-server/internal/limit"
 	"github.com/OpenCommunityEdition/opence-master-server/internal/model"
 	"github.com/OpenCommunityEdition/opence-master-server/internal/netaddr"
+	"github.com/OpenCommunityEdition/opence-master-server/internal/netlist"
 	"github.com/OpenCommunityEdition/opence-master-server/internal/store"
 	"github.com/OpenCommunityEdition/opence-master-server/internal/update"
 	"github.com/OpenCommunityEdition/opence-master-server/internal/web"
@@ -54,6 +55,8 @@ type Admin struct {
 	Discord *discord.Bot
 	// the updater, which the settings page shows (nil: none)
 	Updates *update.Updater
+	// the netlist's builder (nil: MASTER_NETLIST=off)
+	Netlist *netlist.Builder
 
 	mu       sync.Mutex
 	sessions map[string]*session
@@ -106,6 +109,10 @@ func (a *Admin) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/discord", a.guard(a.discordSave))
 	mux.HandleFunc("POST /admin/discord/clear-token", a.guard(a.discordClearToken))
 	mux.HandleFunc("POST /admin/discord/reconnect", a.guard(a.discordReconnect))
+	mux.HandleFunc("GET /admin/netlist", a.guard(a.netlistPage))
+	mux.HandleFunc("POST /admin/netlist/rebuild", a.guard(a.netlistRebuild))
+	mux.HandleFunc("POST /admin/netlist/publish", a.guard(a.netlistPublish))
+	mux.HandleFunc("POST /admin/netlist/policy", a.guard(a.netlistPolicy))
 	mux.HandleFunc("GET /admin/audit", a.guard(a.audit))
 }
 

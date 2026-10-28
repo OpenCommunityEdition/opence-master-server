@@ -89,6 +89,8 @@ class Master:
             "MASTER_PUBLISH_MIN_INTERVAL": "1s", "MASTER_APPLICATIONS_PER_DAY": "100",
             "MASTER_APPLICATIONS_PER_HOUR": "1000", "MASTER_APPLICATIONS_PER_KEY": "100",
             "MASTER_PEERS": peers, "MASTER_PEERS_INTERVAL": "1s", "MASTER_LOG_LEVEL": "info",
+            # (the netlist's sources are on the internet: a test master builds from loopback ones, or none)
+            "MASTER_NETLIST": "off",
         })
         env.update(extra)
         return env

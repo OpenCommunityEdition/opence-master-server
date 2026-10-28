@@ -119,3 +119,9 @@ func Group(key string) string {
 	}
 	return netip.PrefixFrom(prefix.Addr(), 48).Masked().String()
 }
+
+// NotGlobal4 is the IPv4 ranges that are not globally routable (what Global
+// refuses), for a list of addresses to leave out (the netlist).
+func NotGlobal4() []netip.Prefix {
+	return append([]netip.Prefix(nil), notGlobal4...)
+}

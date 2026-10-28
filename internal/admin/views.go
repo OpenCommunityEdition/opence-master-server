@@ -2,6 +2,7 @@ package admin
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/a-h/templ"
@@ -93,3 +94,14 @@ func show(w http.ResponseWriter, r *http.Request, status int, c templ.Component)
 
 // roles writes the approver roles.
 func roles(list []string) string { return strings.Join(list, ", ") }
+
+func itoa(n int64) string { return strconv.FormatInt(n, 10) }
+
+// count writes a number with its thousands apart: 396,104,512.
+func count(n uint64) string {
+	text := strconv.FormatUint(n, 10)
+	for i := len(text) - 3; i > 0; i -= 3 {
+		text = text[:i] + "," + text[i:]
+	}
+	return text
+}

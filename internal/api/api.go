@@ -34,6 +34,8 @@ type Server struct {
 	Prober  *probe.Prober
 	Metrics *metrics.Counters
 	Clients *httpx.Clients
+	// the netlist served (nil: none, answered 503 netlist_unavailable)
+	Netlist Netlists
 
 	publishAddress *limit.Limiter
 	publishKey     *limit.Limiter
@@ -102,6 +104,7 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/keys", s.addKey)
 	mux.HandleFunc("GET /v1/me", s.me)
 	mux.HandleFunc("GET /v1/master", s.info)
+	mux.HandleFunc("GET /v1/netlist", s.netlist)
 	mux.HandleFunc("/v1/", func(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, http.StatusNotFound, "not_found", "no such endpoint", "")
 	})

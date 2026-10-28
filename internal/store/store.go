@@ -1,6 +1,8 @@
 // Package store keeps the master's records in one SQLite file: applications,
 // publishers and the masters' opinions of them, keys, servers, the request
-// nonces seen, peers' synchronisation and the audit log.
+// nonces seen, peers' synchronisation, the netlist and its sources' last
+// good copies, the player keys' links to Discord accounts, and the audit
+// log.
 package store
 
 import (
@@ -79,6 +81,12 @@ CREATE INDEX IF NOT EXISTS audit_action ON audit(action, n);
 CREATE TABLE IF NOT EXISTS peers (key_id TEXT PRIMARY KEY, url TEXT NOT NULL, since INTEGER NOT NULL,
 	last_ok INTEGER NOT NULL, last_error TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS netlist_sources (id TEXT PRIMARY KEY, url TEXT NOT NULL, fetched INTEGER NOT NULL,
+	ok INTEGER NOT NULL, error TEXT NOT NULL, entries INTEGER NOT NULL, data BLOB);
+CREATE TABLE IF NOT EXISTS netlist_published (id INTEGER PRIMARY KEY CHECK (id = 1), serial INTEGER NOT NULL,
+	generated INTEGER NOT NULL, built INTEGER NOT NULL, body BLOB NOT NULL, signature TEXT NOT NULL,
+	ranges INTEGER NOT NULL, addresses INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS netlist_policy (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 `
 
 // the indexes on columns a migration may have added

@@ -36,6 +36,7 @@ import (
 	"github.com/OpenCommunityEdition/opence-master-server/internal/mail"
 	"github.com/OpenCommunityEdition/opence-master-server/internal/metrics"
 	"github.com/OpenCommunityEdition/opence-master-server/internal/model"
+	"github.com/OpenCommunityEdition/opence-master-server/internal/netlist"
 	"github.com/OpenCommunityEdition/opence-master-server/internal/peers"
 	"github.com/OpenCommunityEdition/opence-master-server/internal/probe"
 	"github.com/OpenCommunityEdition/opence-master-server/internal/sign"
@@ -171,6 +172,41 @@ func httpClient(config *tls.Config) *http.Client {
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
 
+// sourceClient is the client for the netlist's sources: it follows
+// redirects to HTTPS URLs only.
+func sourceClient(config *tls.Config) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = config.Clone()
+	return &http.Client{Transport: transport, Timeout: netlist.FetchTimeout,
+		CheckRedirect: func(r *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return errors.New("more than 5 redirects")
+			}
+			if r.URL.Scheme != "https" {
+				return errors.New("a redirect to a URL that is not https://")
+			}
+			return nil
+		}}
+}
+
+// netlistSources are the netlist's sources the options name.
+func netlistSources(cfg *config.Config) []netlist.Source {
+	var out []netlist.Source
+	for _, u := range cfg.NetlistASNURLs {
+		out = append(out, netlist.NewSource(netlist.KindASN, u))
+	}
+	if cfg.NetlistIPToASNURL != "" {
+		out = append(out, netlist.NewSource(netlist.KindIPToASN, cfg.NetlistIPToASNURL))
+	}
+	for _, u := range cfg.NetlistListURLs {
+		out = append(out, netlist.NewSource(netlist.KindList, u))
+	}
+	if cfg.NetlistTorURL != "" {
+		out = append(out, netlist.NewSource(netlist.KindTor, cfg.NetlistTorURL))
+	}
+	return out
+}
+
 // probeSocket opens the probe's UDP socket: for an unspecified IPv6 address
 // ("[::]:0", the default) a dual-stack socket, which reaches IPv4 servers
 // too, or an IPv4 one where the machine has no IPv6.
@@ -282,6 +318,20 @@ func serve(args []string) error {
 		log.Info("probing from " + conn.LocalAddr().String())
 	}
 	server := api.New(m, prober, counters, clients)
+	var lists *netlist.Builder
+	if cfg.Netlist {
+		config, err := tlsConfig(cfg.CAFile)
+		if err != nil {
+			return usageError{err}
+		}
+		lists = netlist.New(m.Store, m.Key, sourceClient(config), log, netlistSources(cfg), cfg.NetlistInterval,
+			cfg.NetlistTorInterval, "opence-master/"+core.Version+" (+https://github.com/OpenCommunityEdition/opence-master-server)")
+		if err := lists.Load(); err != nil {
+			return fmt.Errorf("the netlist: %w", err)
+		}
+		server.Netlist = lists
+		go lists.Run(ctx)
+	}
 	bot := discord.New(m, discord.Gateway(log), log)
 	m.Watcher = bot
 	pages, err := web.New(m, clients)
@@ -295,6 +345,7 @@ func serve(args []string) error {
 		return err
 	}
 	adminPages.Discord = bot
+	adminPages.Netlist = lists
 	restarts := make(chan string, 1)
 	updater.Restart = func(binary string) { restarts <- binary }
 	updater.Available = bot.UpdateAvailable

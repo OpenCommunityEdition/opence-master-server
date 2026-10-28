@@ -1,0 +1,208 @@
+package admin
+
+import (
+	"strconv"
+
+	"github.com/OpenCommunityEdition/opence-master-server/internal/netlist"
+	"github.com/OpenCommunityEdition/opence-master-server/internal/view"
+)
+
+// outcomeTone is a build outcome's colour.
+func outcomeTone(outcome string) view.Tone {
+	switch outcome {
+	case netlist.OutcomePublished, netlist.OutcomeUnchanged:
+		return view.OK
+	case netlist.OutcomeHeld:
+		return view.Warn
+	case netlist.OutcomeFailed:
+		return view.Bad
+	}
+	return view.Neutral
+}
+
+// policyField is one of the admin's settings: a textarea.
+templ policyField(key, label, hint, value string) {
+	@view.FormField("policy-"+key, label, hint) {
+		<textarea id={ "policy-" + key } name={ key } rows="5" spellcheck="false" class={ view.Input + " font-mono" }>{ value }</textarea>
+	}
+}
+
+templ netlistPage(p view.Page, d netlistView) {
+	@layout(p) {
+		@heading("Netlist", "The IPv4 ranges of VPN providers, Tor exits and datacenters, signed by this master and fetched by dedicated servers (GET /v1/netlist), which refuse those players unless they linked a Discord account. The sources are fetched every "+d.Interval+" (Tor's exits every "+d.TorInterval+").") {
+			if d.Enabled {
+				<form method="post" action="/admin/netlist/rebuild">
+					@view.CSRF(p.CSRF)
+					<button class={ view.ButtonSecondary } type="submit">Rebuild now</button>
+				</form>
+			}
+		}
+		if !d.Enabled {
+			@view.Alert(view.Warn) {
+				This master builds and serves no netlist: <code>MASTER_NETLIST=off</code>. <code>GET /v1/netlist</code> answers 503 <code>netlist_unavailable</code>.
+			}
+		} else {
+			if d.Status.Held != nil {
+				@view.Alert(view.Warn) {
+					<div class="flex flex-wrap items-center justify-between gap-3">
+						<p>
+							A build of { count(d.Status.Held.Addresses) } addresses ({ strconv.Itoa(len(d.Status.Held.Ranges)) } ranges, built { view.TimeText(d.Status.Held.Generated) }) is held: it has fewer than half the addresses of the list served, so a source may be broken. Check the sources below; publish it only if the drop is right.
+						</p>
+						<form method="post" action="/admin/netlist/publish">
+							@view.CSRF(p.CSRF)
+							<button class={ view.ButtonDanger + view.ButtonSmall } type="submit">Publish anyway</button>
+						</form>
+					</div>
+				}
+			}
+			<div class="grid items-start gap-6 lg:grid-cols-2">
+				@view.Card() {
+					@view.CardHeader("The list served", "")
+					@view.Fields() {
+						if d.Status.Current != nil {
+							@view.Field("Serial") {
+								<span class="tabular-nums">{ strconv.FormatUint(d.Status.Current.Serial, 10) }</span>
+							}
+							@view.Field("Generated") {
+								{ view.TimeText(d.Status.Current.Generated) }
+							}
+							@view.Field("Ranges") {
+								<span class="tabular-nums">{ count(uint64(d.Status.Current.Ranges)) }</span>
+							}
+							@view.Field("Addresses") {
+								<span class="tabular-nums">{ count(d.Status.Current.Addresses) }</span>
+							}
+							@view.Field("Size") {
+								<span class="tabular-nums">{ count(uint64(len(d.Status.Current.Body))) } bytes</span>
+							}
+						} else {
+							@view.Field("Served") {
+								@view.Badge(view.Warn, "none yet")
+								<span class="text-muted">: <code>GET /v1/netlist</code> answers 503 until a build succeeds.</span>
+							}
+						}
+						@view.Field("Last build") {
+							if d.Status.Fetching {
+								@view.Badge(view.Info, "fetching the sources")
+							} else if d.Status.Last.Outcome != "" {
+								@view.Badge(outcomeTone(d.Status.Last.Outcome), d.Status.Last.Outcome)
+								<span class="text-muted">{ view.Time(d.Status.Last.At) }</span>
+							} else {
+								<span class="text-muted">none yet</span>
+							}
+							if d.Status.Last.Detail != "" {
+								<p class="mt-1 text-xs text-muted">{ d.Status.Last.Detail }</p>
+							}
+						}
+					}
+				}
+				@view.Card() {
+					@view.CardHeader("Look up an address", "Which sources list it, its network, and whether the list served holds it.")
+					<form method="get" action="/admin/netlist" class="flex flex-wrap gap-2">
+						<input type="text" name="ip" value={ d.Address } placeholder="203.0.113.7" aria-label="IPv4 address" class={ view.InputInline + " min-w-0 flex-1 font-mono" }/>
+						<button class={ view.ButtonSecondary } type="submit">Look up</button>
+					</form>
+					if d.LookupError != "" {
+						<p class="mt-3 text-sm text-bad">{ d.LookupError }</p>
+					}
+					if d.Lookup != nil {
+						<div class="mt-4">
+							@view.Fields() {
+								@view.Field("Address") {
+									<code>{ d.Lookup.Address.String() }</code>
+									if d.Lookup.Listed {
+										@view.Badge(view.Bad, "listed")
+									} else {
+										@view.Badge(view.OK, "not listed")
+									}
+									if d.Status.Held != nil && d.Lookup.Held != d.Lookup.Listed {
+										if d.Lookup.Held {
+											@view.Badge(view.Warn, "listed in the held build")
+										} else {
+											@view.Badge(view.Warn, "not in the held build")
+										}
+									}
+								}
+								@view.Field("Network") {
+									if d.Lookup.ASN != 0 {
+										AS{ strconv.FormatUint(uint64(d.Lookup.ASN), 10) } { d.Lookup.Name }
+									} else {
+										<span class="text-muted">unknown</span>
+									}
+								}
+								@view.Field("Sources") {
+									if len(d.Lookup.Labels) == 0 {
+										<span class="text-muted">none</span>
+									} else {
+										<ul id="lookup-labels" class="space-y-1">
+											for _, l := range d.Lookup.Labels {
+												<li>{ l }</li>
+											}
+										</ul>
+									}
+								}
+							}
+						</div>
+					}
+				}
+			</div>
+			@view.Card() {
+				@view.CardHeader("Sources", "A source that fails keeps its last good copy (in the database), and the list is built from it.")
+				<div class={ view.TableWrap }>
+					<table class={ view.Table }>
+						<thead>
+							<tr>
+								<th class={ view.Th }>Source</th>
+								<th class={ view.Th }>Kind</th>
+								<th class={ view.ThNum }>Entries</th>
+								<th class={ view.Th }>Last good</th>
+								<th class={ view.Th }>Last fetch</th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, s := range d.Status.Sources {
+								<tr class={ view.Tr }>
+									<td class={ view.Td + " break-all" }>
+										<a href={ templ.URL(s.URL) } rel="noopener">{ s.URL }</a>
+										<div class="text-xs text-muted">{ s.Label }, every { s.Interval.String() }</div>
+									</td>
+									<td class={ view.Td }>{ s.Kind }</td>
+									<td class={ view.TdNum }>{ count(uint64(s.Entries)) }</td>
+									<td class={ view.Td + " text-muted" }>{ view.Time(s.OK) }</td>
+									<td class={ view.Td }>
+										if s.Fetched == 0 {
+											<span class="text-muted">never</span>
+										} else if s.Error != "" {
+											@view.Badge(view.Bad, "failed")
+											<div class="text-xs text-muted">{ view.TimeText(s.Fetched) }</div>
+											<div class="text-xs text-bad break-all">{ s.Error }</div>
+										} else {
+											@view.Badge(view.OK, "ok")
+											<div class="text-xs text-muted">{ view.TimeText(s.Fetched) }</div>
+										}
+									</td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				</div>
+				@view.Hint() {
+					The sources are options: <code>MASTER_NETLIST_ASN_URLS</code>, <code>MASTER_NETLIST_IPTOASN_URL</code>, <code>MASTER_NETLIST_LIST_URLS</code>, <code>MASTER_NETLIST_TOR_URL</code>. X4BNet's lists_vpn (MIT), iptoasn.com (public domain), the Tor Project's exit list.
+				}
+			}
+			@view.Card() {
+				@view.CardHeader("This master's own", "Added to the sources, or taken out of the list after everything else. One entry a line; # starts a comment. Saving builds the list again from the sources' copies.")
+				<form method="post" action="/admin/netlist/policy" class="space-y-5">
+					@view.CSRF(p.CSRF)
+					<div class="grid gap-5 lg:grid-cols-2">
+						@policyField(netlist.PolicyExtraASNs, "Blocked autonomous systems", "Their ranges (iptoasn's) are listed: AS13335, or 13335.", d.Policy[netlist.PolicyExtraASNs])
+						@policyField(netlist.PolicyAllowASNs, "Allowed autonomous systems", "Their ranges are taken out, whatever lists them.", d.Policy[netlist.PolicyAllowASNs])
+						@policyField(netlist.PolicyBlock, "Blocked ranges", "Listed: a CIDR (198.51.100.0/24), an address, or first-last.", d.Policy[netlist.PolicyBlock])
+						@policyField(netlist.PolicyAllow, "Allowed ranges", "Taken out, whatever lists them (a false positive).", d.Policy[netlist.PolicyAllow])
+					</div>
+					<button class={ view.ButtonPrimary } type="submit">Save and build</button>
+				</form>
+			}
+		}
+	}
+}
