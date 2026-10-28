@@ -33,8 +33,9 @@ Tests touch nothing beyond loopback: Discord is a fake `Client`
 ## Invariants
 
 - **Secrets never reach a log, a page, the audit log or an error**: the
-  admin token, the Discord token (`redact`, `discordLog`), the SMTP
-  password. Tests check it; keep them checking.
+  admin token, the Discord token (`redact`, `discordLog`), the Discord
+  OAuth2 client secret and the codes and tokens of a player's login, the
+  SMTP password. Tests check it; keep them checking.
 - **HTTPS or loopback**: publishes, key changes, the admin pages and the
   setup refuse plain HTTP (`Clients.Of(r).Protected()`). `X-Forwarded-*`
   are believed only from `MASTER_TRUSTED_PROXIES`. In Docker, the master's

@@ -14,6 +14,13 @@ own host-signed listing (the bytes the game publishes to the signalling
 brokers), so the game's join path is unchanged, and the list itself is
 signed with the master's key, which the game pins in its `masters.txt`.
 
+A master also publishes a signed **netlist**, the IPv4 ranges of VPN
+providers, Tor exits and datacenters, which dedicated servers fetch to
+refuse such players on their own, and lets a player **link** the game to a
+Discord account (with Discord's OAuth2, on its `/link` page): the master
+then gives the game a short-lived signed **pass**, which lets the player in
+on those servers anyway ("[Player links and the netlist](#player-links-and-the-netlist)").
+
 It implements **protocol version 1**, specified in the game's repository in
 `docs/master_protocol.md`.
 The protocol is the contract; this program is one implementation of it.
@@ -65,16 +72,17 @@ Docker, see ["Running a master"](#running-a-master) (systemd).
 | Path | What |
 | --- | --- |
 | `cmd/opence-master` | The command: `serve` and the administration commands |
-| `internal/sign` | Keys, key ids, server ids, the `OpenCE-Ed25519` request signature, signed bodies |
+| `internal/sign` | Keys, key ids, server ids, the `OpenCE-Ed25519` request signature, signed bodies, the player keys' signed queries and the pass |
 | `internal/listing` | The game's listing: reading it and checking the host's signature |
 | `internal/probe` | The UDP reachability probe: packets, stateless nonces, the probe state machine |
-| `internal/api` | The `/v1` endpoints, `/healthz`, `/metrics` |
-| `internal/core` | Who a key is, approvals, moderation, which servers are listed |
+| `internal/api` | The `/v1` endpoints (with `/v1/netlist` and `/v1/pass`), `/healthz`, `/metrics` |
+| `internal/core` | Who a key is, approvals, moderation, which servers are listed, the player keys' links and passes |
+| `internal/netlist` | The netlist: its sources fetched, merged and signed in the background, the shrink guard, the admin's ranges |
 | `internal/model` | Records, and the rules that combine several masters' words on a publisher |
 | `internal/peers` | Approval sharing between masters |
 | `internal/store` | The SQLite database |
-| `internal/discord` | The Discord bot: `/apply`, the applications' log channel and its Approve and Deny buttons, the applicants' direct messages (`gateway.go` alone talks to Discord) |
-| `internal/web`, `internal/admin` | The public pages (the list, how to apply) and the admin pages (with the bot's settings) |
+| `internal/discord` | The Discord bot: `/apply`, the applications' log channel and its Approve and Deny buttons, the applicants' direct messages (`gateway.go` alone talks to Discord through discordgo), and the player links' OAuth2 and membership check (`oauth.go`, over net/http) |
+| `internal/web`, `internal/admin` | The public pages (the list, how to apply, the player links' `/link` pages, `/privacy`) and the admin pages (with the bot's settings, the netlist and the links) |
 | `internal/update` | The updates: the release check, the signed download, the restart into it, the database's backups |
 | `cmd/release-sign` | Signs a release's `SHA256SUMS` with the release key (the release workflow) |
 | `internal/vectors` | Makes `testdata/vectors.json` (`go test ./internal/vectors -update`) |
@@ -109,7 +117,8 @@ otherwise (`OPENCE_PUBLISHER_PURE=1` forces the latter).
 A small VPS is enough: a few hundred servers publishing every 30 seconds
 and a few thousand players' lists are a few requests a second, and the list
 is cached for 5 seconds. The master needs a domain, a certificate (a
-reverse proxy gets one), outbound UDP for the probe, and a Discord server
+reverse proxy gets one), outbound UDP for the probe, outbound HTTPS for
+the netlist's sources (GitHub, iptoasn.com, the Tor Project), and a Discord server
 for its bot, where operators apply and approvers decide (the bot connects
 out to Discord: it needs no public URL of its own).
 
@@ -247,7 +256,8 @@ The bot talks to Discord over its gateway (an outgoing WebSocket to
 
 Every option is an environment variable and a flag of `serve` (the flag
 wins); `opence-master serve -h` lists them (without the values of the
-secrets: the admin token, the SMTP password and the bot's token). Every
+secrets: the admin token, the SMTP password, the bot's token and the OAuth2
+client secret). Every
 limit by address counts an
 IPv6 address by its /64; the limits' memory (65,536 addresses each) holds at
 most 4,096 /64s of one /48, and makes room by forgetting the addresses that
@@ -266,7 +276,20 @@ are least restricted, never one a flood drained while a fuller one is held.
 | `MASTER_DISCORD_GUILD` | (the admin pages') | The Discord server (guild) id where the bot's `/apply` is |
 | `MASTER_DISCORD_CHANNEL` | (`/configure`'s) | The channel id where the bot posts the applications |
 | `MASTER_DISCORD_APPROVER_ROLES` | (`/configure`'s) | The role ids, separated by commas, whose members approve and deny |
-| `MASTER_DISCORD_INVITE` | (the admin pages') | An invite to the Discord server, shown on the `/apply` page |
+| `MASTER_DISCORD_INVITE` | (the admin pages') | An invite to the Discord server, shown on the `/apply` page (and to a player a `MASTER_LINK_REQUIRE_GUILD` master refuses) |
+| `MASTER_DISCORD_CLIENT_ID` | (the bot's application) | The Discord application whose OAuth2 the player links use; the bot's, learnt from Discord or its token, unless set |
+| `MASTER_DISCORD_CLIENT_SECRET` | (the admin pages') | That application's OAuth2 client secret (the Developer Portal's OAuth2 page); without it, `/link` says linking is not set up. A secret: never shown nor logged |
+| `MASTER_LINK_REQUIRE_GUILD` | `false` | Link only the members of the bot's Discord server (checked with the bot's token; when the server is set, membership is checked anyway and written in the pass's flags) |
+| `MASTER_LINK_MIN_ACCOUNT_DAYS` | `0` | Link only Discord accounts this many days old (from the account id), 0 to 3650 |
+| `MASTER_LINK_MAX_KEYS` | `3` | Player keys one Discord account holds (1 to 16); a new one drops the least recently used |
+| `MASTER_PASS_TTL` | `72h` | How long a pass is good (an hour to 30 days); the game renews it with 48 hours left |
+| `MASTER_NETLIST` | `on` | Build and serve the netlist (`off`: `GET /v1/netlist` answers 503 `netlist_unavailable`) |
+| `MASTER_NETLIST_INTERVAL` | `24h` | How often the netlist's sources are fetched (an hour at least), but Tor's |
+| `MASTER_NETLIST_TOR_INTERVAL` | `1h` | How often the Tor exits are fetched (5 minutes at least); a source that failed is tried again after this too |
+| `MASTER_NETLIST_ASN_URLS` | X4BNet's `input/datacenter/ASN.txt` and `input/vpn/ASN.txt` | Lists of autonomous systems (`AS<n>` a line), separated by commas, expanded to their ranges with iptoasn; empty: none. Each source URL is `https://`, or `http://` to loopback |
+| `MASTER_NETLIST_IPTOASN_URL` | `https://iptoasn.com/data/ip2asn-v4.tsv.gz` | iptoasn's table, which expands the autonomous systems; empty: none |
+| `MASTER_NETLIST_LIST_URLS` | X4BNet's `output/vpn/ipv4.txt` and `output/datacenter/ipv4.txt` | Lists of IPv4 CIDRs or addresses (one a line), separated by commas, taken whole; empty: none |
+| `MASTER_NETLIST_TOR_URL` | `https://check.torproject.org/torbulkexitlist` | The Tor exits' addresses; empty: none |
 | `MASTER_NOTIFY_WEBHOOK` | | A Discord-compatible webhook told of new applications, besides the bot's log channel |
 | `MASTER_LISTEN` | `127.0.0.1:8090` | The HTTP listener |
 | `MASTER_TLS_CERT`, `MASTER_TLS_KEY` | | Serve HTTPS directly instead of behind a proxy |
@@ -283,7 +306,7 @@ are least restricted, never one a flood drained while a fuller one is held.
 | `MASTER_SMTP_TLS` | `auto` | TLS to the SMTP server, always: `auto` (implicit TLS on port 465, else STARTTLS), `starttls` (a server that does not offer it is refused, nothing is sent), `tls` (implicit TLS on any port), or `none` (only for an SMTP server on loopback). Certificates are checked against the system's authorities and `MASTER_CA_FILE` |
 | `MASTER_DEFAULT_QUOTA` | `4` | Servers at once for a new publisher (1 to 1000) |
 | `MASTER_PUBLISH_MIN_INTERVAL` | `5s` | The least time between one server's publishes (a burst of 2) |
-| `MASTER_LIST_RATE` | `60` | Requests a minute per address for the list, one server, a publisher's page, the list page and `/metrics` together |
+| `MASTER_LIST_RATE` | `60` | Requests a minute per address for the list, one server, a publisher's page, the list page, `/metrics`, the netlist and the passes together |
 | `MASTER_APPLICATIONS_PER_DAY` | `3` | Applications a day per Discord user, who has one pending at a time (checked first) |
 | `MASTER_APPLICATIONS_PER_KEY` | `3` | Applications a day per publisher key (checked next) |
 | `MASTER_APPLICATIONS_PER_HOUR` | `100` | An hour's applications in all past which the admins are alerted once (the log channel, the webhook and the log), and the next ones that hour are logged rather than posted one by one; applications without a proof of key are refused once as many of them came in an hour. One with a proof is never refused for it |
@@ -310,8 +333,12 @@ each publish; `trusted`: listed without a probe, for a server behind a NAT
 the probe cannot reach; and the disputed listings: publishes refused with
 `listing_taken`, and host keys taken over from a server replaying an old
 listing, which an admin settles by hiding the copying server or suspending
-its publisher), the peers, the Discord bot's settings and state, and the
-audit log. Every action, from the pages, Discord or the command line, is
+its publisher), the peers, the netlist (its sources, the build held by
+the shrink guard and **Publish anyway**, **Rebuild now**, this master's own
+blocked and allowed autonomous systems and ranges, and a lookup that says
+which sources list an address), the player links (search by Discord id,
+username or key id, unlink, revoke an account with a reason, lift a
+revocation), the Discord bot's settings and state, and the audit log. Every action, from the pages, Discord or the command line, is
 written to the audit log.
 
 ```sh
@@ -326,6 +353,8 @@ opence-master suspend <publisher> [--reason "..."]     # publishes refused, serv
 opence-master resume <publisher>
 opence-master revoke <publisher | key id> [--reason "..."]   # for good
 opence-master quota <publisher> <n>
+opence-master add-link <ed25519:pub> <discord id> <name>   # a player key linked by hand (players use /link)
+opence-master revoke-link <discord id> <reason>            # the account's keys get no pass, and it links no more
 ```
 
 The commands take the same `MASTER_DB` and `MASTER_KEY` as `serve` and may
@@ -412,6 +441,84 @@ last. The workflow refuses a key whose signature the masters would refuse.
 | A web form's application never verified | 7 days |
 | A denied application | 30 days after the denial |
 | The audit log | its newest 100,000 entries |
+| A link page's visit (its OAuth2 state) | 10 minutes, and used once |
+| A player key's link | until unlinked (`/link/manage`, the admin pages), or 90 days after its last pass (its making, if none) |
+| A revoked Discord account, and the keys it held | until an admin lifts the revocation |
+| The netlist served, and each source's last good copy | while the source is configured (the list until the next one) |
+
+## Player links and the netlist
+
+Dedicated servers may refuse players whose address is a VPN provider's, a
+Tor exit's or a datacenter's (the game's `server.vpn_policy`), and let them
+in when they linked the game to a Discord account at a master the server
+publishes to. The master serves both halves; the game's
+`docs/master_protocol.md` ("The netlist", "Player keys, links and passes")
+is the contract.
+
+**The netlist** (`GET /v1/netlist`) is a signed binary list of IPv4 ranges,
+which servers fetch every hour and check joining players against on their
+own: no player's address is sent to the master. The master builds it in the
+background from public sources:
+
+1. the autonomous systems of [X4BNet's lists_vpn](https://github.com/X4BNet/lists_vpn)
+   (MIT): `input/datacenter/ASN.txt` (hosting and cloud) and
+   `input/vpn/ASN.txt` (VPN providers), and this master's own (AS13335,
+   Cloudflare, by default: its WARP VPN's exits are not published apart),
+   each expanded to its ranges with [iptoasn.com](https://iptoasn.com)'s
+   `ip2asn-v4.tsv.gz` (public domain);
+2. X4BNet's built lists, `output/vpn/ipv4.txt` and `output/datacenter/ipv4.txt`;
+3. the [Tor Project](https://www.torproject.org)'s exits,
+   `https://check.torproject.org/torbulkexitlist`, every hour;
+4. the admin's blocked ranges, less the admin's allowed ranges and the
+   ranges of the allowed autonomous systems (the admin pages' **Netlist**);
+
+keeping the globally routable addresses only, merged. In October 2026 that
+is some 31,700 ranges and 397 million addresses (250 kB). A source that
+fails keeps its last good copy (in the database, with the list served, so
+a restart serves at once), and a build of fewer than half the last list's
+addresses is held until an admin publishes it (**Publish anyway**), so a
+broken source cannot open every server. The serial rises with each list
+published; a build identical to the list served publishes nothing new.
+The `/privacy` page credits the sources (with X4BNet's MIT notice).
+
+**Player links.** The game makes a player key (`player.key`) and opens the
+master's `/link` page with its signed query; the page shows the game's
+confirmation code and sends the player through Discord's OAuth2 (the
+`identify` scope alone); the master keeps the key's public half, the
+account's id and username, and the times (no token, no address), and
+answers the game's `GET /v1/pass` with a pass it signs, good
+`MASTER_PASS_TTL`. `/link/manage` logs in with Discord again to unlink keys
+or delete everything. To set it up, with the bot's own application (the
+one whose token the Discord page holds):
+
+1. set `MASTER_PUBLIC_URL` (the redirect URI is built from it, and the
+   game's `masters.txt` URL must be the same origin, for the page's cookie);
+2. in the [Developer Portal](https://discord.com/developers/applications),
+   the application's **OAuth2** page: add the redirect
+   `<MASTER_PUBLIC_URL>/link/callback` (such as
+   `https://master1.example.org/link/callback`), and press **Reset Secret**
+   to copy the client secret;
+3. paste the secret on the admin pages' **Discord** page (or set
+   `MASTER_DISCORD_CLIENT_SECRET`, which wins). The page says whether the
+   links are set up; until they are, `/link` says what is missing.
+
+`MASTER_LINK_MIN_ACCOUNT_DAYS` and `MASTER_LINK_REQUIRE_GUILD` refuse young
+accounts and accounts outside the bot's server; the admin pages' **Links**
+revoke an account (its keys are answered `link_revoked` with the reason,
+and it links no more). Every link, unlink and revocation is in the audit
+log, with its actor (`discord:<id> <name>` for the player's own).
+
+| Request | Who | Answer |
+| --- | --- | --- |
+| `GET /v1/netlist` | anyone (the list's limit) | The netlist (`application/octet-stream`), signed in `Signature`, `Signature-Key`, `Signature-Time` (its generated time), with an `ETag` (`If-None-Match` answers 304), `Cache-Control: public, max-age=300` and gzip when asked; `503 netlist_unavailable` while none is built, or with `MASTER_NETLIST=off` |
+| `GET /v1/pass?key=&ts=&sig=` | the player key's holder (signed in the query, `ts` within 300 seconds) | The 170-byte pass, `Cache-Control: no-store`; `404 not_linked`, `403 link_revoked` (the reason in `message`), `401 bad_signature` or `clock`, `429 rate_limited` (30 a minute per key, and the list's limit per address) |
+| `GET /link?key=&ts=&sig=` | people (the game opens it; `ts` within 600 seconds) | The confirmation code and **Continue with Discord** |
+| `GET /link/callback` | Discord's OAuth2 redirect | The link recorded, or why not |
+| `GET /link/manage` | people (after a Discord login) | The account's keys, **Unlink** and **Delete everything** |
+| `GET /privacy` | anyone | What is kept, and the netlist's sources and their licences |
+
+The link pages take 20 requests a minute per address, and like the admin
+pages they are served over HTTPS (or from loopback) only.
 
 ## Applying as an operator
 
