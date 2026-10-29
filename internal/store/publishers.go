@@ -194,6 +194,20 @@ func (s *Store) ApplicationsToTell(limit int) ([]model.Application, error) {
 		LIMIT ?`, model.ApplicationPending, limit)
 }
 
+// RequeueUnposted puts back on the log channel's queue the pending
+// applications taken off it unposted after a failure to post (their
+// log_status set, and no message), and returns how many. Those never queued,
+// past the hour's number, are left alone.
+func (s *Store) RequeueUnposted() (int64, error) {
+	result, err := s.db.Exec(`UPDATE applications SET log_queued = 1, log_channel = ''
+		WHERE status = ? AND log_queued = 0 AND log_message = '' AND log_status = ?`,
+		model.ApplicationPending, model.ApplicationPending)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 // SetApplicationPosted records an application's log channel message (none,
 // to take it off the queue unposted) and the status it shows.
 func (s *Store) SetApplicationPosted(id, channel, message, status string) error {

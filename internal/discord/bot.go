@@ -103,6 +103,9 @@ type Bot struct {
 	// the first wait before connecting again after a failure (doubled each
 	// time, to 10 minutes)
 	Retry time.Duration
+	// the wait before posting again after the log channel refused a post
+	// (its permissions, or the channel gone)
+	PostRetry time.Duration
 
 	mu       sync.Mutex
 	ctx      context.Context
@@ -118,6 +121,10 @@ type Bot struct {
 	deciding map[string]bool
 	kick     chan struct{}
 	syncing  sync.Mutex
+	// after the log channel refused a post: no post is tried before then,
+	// and the refusal stays the sync's error
+	postsHeld    time.Time
+	postsRefusal string
 	// the master's updates, which the log channel's notice starts (nil:
 	// none)
 	Updates Updates
@@ -131,7 +138,7 @@ type draft struct {
 
 // New makes the bot; Start connects it.
 func New(m *core.Master, dial Dialer, log *slog.Logger) *Bot {
-	return &Bot{M: m, Dial: dial, Log: log, Interval: 15 * time.Second, Retry: 15 * time.Second,
+	return &Bot{M: m, Dial: dial, Log: log, Interval: 15 * time.Second, Retry: 15 * time.Second, PostRetry: time.Minute,
 		state: State{Status: Off, Reason: "not started"}, drafts: map[string]draft{}, deciding: map[string]bool{},
 		kick: make(chan struct{}, 1)}
 }
@@ -352,8 +359,26 @@ func (b *Bot) configure(name, key, value, label, actor string, apply func(*Setti
 	b.mu.Lock()
 	apply(&b.settings)
 	b.mu.Unlock()
+	// (a new channel, or the same one with its permissions fixed: the
+	// applications it refused are tried at once)
+	b.requeue()
 	b.ApplicationChanged("")
 	return nil
+}
+
+// requeue puts back on the log channel's queue the pending applications
+// taken off it unposted after a refusal (an older version gave up on them
+// for good), and lifts the wait after a refusal.
+func (b *Bot) requeue() {
+	b.mu.Lock()
+	b.postsHeld, b.postsRefusal = time.Time{}, ""
+	b.mu.Unlock()
+	n, err := b.M.Store.RequeueUnposted()
+	if err != nil {
+		b.Log.Warn("discord: the unposted applications not queued again", "err", err)
+	} else if n > 0 {
+		b.Log.Info("discord: unposted applications queued again", "applications", n)
+	}
 }
 
 // State returns the bot's state.
@@ -574,6 +599,7 @@ func (b *Bot) connect(ctx context.Context, generation uint64, s Settings) {
 				Since: b.M.Now()}
 			b.mu.Unlock()
 			b.Log.Info("discord: connected", "bot", client.Self().Name)
+			b.requeue()
 			b.ApplicationChanged("")
 			return
 		}
@@ -660,9 +686,11 @@ const TellAge = 7 * 24 * time.Hour
 // the log channel, edits the messages of those decided since, and tells
 // Discord applicants of decisions. Each kind of work is read and done on its
 // own, so that one that fails does not hold up the others: a failure to post
-// stops the posts for the pass (a permanent one, the channel gone or out of
-// the bot's reach, takes that application off the queue), one to edit stops
-// the edits, to be tried again at the next pass.
+// stops the posts for the pass (the channel refusing it, for its
+// permissions or because it is gone, stops them for PostRetry, or until the
+// settings change or the bot connects again; Discord refusing the message
+// itself takes that application off the queue), one to edit stops the
+// edits, to be tried again at the next pass.
 func (b *Bot) Sync() {
 	b.syncing.Lock()
 	defer b.syncing.Unlock()
@@ -697,6 +725,12 @@ func (b *Bot) syncPosts(client Client, s Settings) string {
 		// (posted once a channel is chosen)
 		return ""
 	}
+	b.mu.Lock()
+	held, refusal := b.postsHeld, b.postsRefusal
+	b.mu.Unlock()
+	if b.M.Now().Before(held) {
+		return refusal
+	}
 	list, err := b.M.Store.ApplicationsToPost(syncBatch)
 	if err != nil {
 		return "applications not read: " + err.Error()
@@ -704,9 +738,22 @@ func (b *Bot) syncPosts(client Client, s Settings) string {
 	for i := range list {
 		a := &list[i]
 		id, err := client.Send(s.Channel, b.applicationMessage(a))
-		if err != nil && Permanent(err) {
+		if err != nil && ChannelRefusal(err) {
+			// (not the application's fault: it stays queued, for when the
+			// bot may post there)
+			refusal := fmt.Sprintf("application %s not posted to channel %s: %v (the bot needs to view the "+
+				"channel and send messages and embeds in it; tried again in %s, or at once after /configure)",
+				a.ID, s.Channel, err, b.PostRetry)
+			b.Log.Warn("discord: the log channel refused an application", "id", a.ID, "err", err)
+			b.mu.Lock()
+			b.postsHeld, b.postsRefusal = b.M.Now().Add(b.PostRetry), refusal
+			b.mu.Unlock()
+			return refusal
+		} else if err != nil && Permanent(err) {
 			b.Log.Warn("discord: application not posted, for good", "id", a.ID, "err", err)
-			if err := b.M.Store.SetApplicationPosted(a.ID, "", "", a.Status); err != nil {
+			// (no status shown: RequeueUnposted leaves it, as one Discord
+			// refused for itself would be refused again)
+			if err := b.M.Store.SetApplicationPosted(a.ID, "", "", ""); err != nil {
 				return err.Error()
 			}
 			return fmt.Sprintf("application %s not posted to channel %s, and not tried again: %v", a.ID,
