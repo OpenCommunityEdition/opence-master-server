@@ -37,7 +37,7 @@ func NewOAuth(client *http.Client) *OAuth {
 // redirect URI.
 func (o *OAuth) AuthorizeURL(clientID, redirectURI, state string) string {
 	query := url.Values{"response_type": {"code"}, "client_id": {clientID}, "scope": {"identify"},
-		"state": {state}, "redirect_uri": {redirectURI}, "prompt": {"none"}}
+		"state": {state}, "redirect_uri": {redirectURI}}
 	return o.Authorize + "?" + query.Encode()
 }
 
