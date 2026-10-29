@@ -558,7 +558,7 @@ func (a *Admin) discordSave(w http.ResponseWriter, r *http.Request, q request) {
 		a.done(w, r, q, "/admin/discord", errors.New("this master runs no Discord bot"), "")
 		return
 	}
-	err := a.Discord.Save(discord.Form{Token: r.FormValue("token"), Guild: r.FormValue("guild"),
+	err := a.Discord.Save(discord.Form{Token: r.FormValue("bot_token"), Guild: r.FormValue("guild"),
 		Invite: r.FormValue("invite"), ClientSecret: r.FormValue("client_secret")}, "admin")
 	a.done(w, r, q, "/admin/discord", err, "Saved; the bot connects again.")
 }

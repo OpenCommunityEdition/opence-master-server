@@ -38,6 +38,10 @@ var (
 	snowflakePattern = regexp.MustCompile(`^[0-9]{17,20}$`)
 	tokenPattern     = regexp.MustCompile(`^[A-Za-z0-9._-]{30,200}$`)
 	secretPattern    = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
+	// a bot token's three parts (the bot's id, a time, a signature), asked
+	// of the admin page's token only (the environment's is left to Discord,
+	// rather than a master refusing to start over its shape)
+	botTokenPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$`)
 )
 
 // Settings are the bot's settings: the admin page's and /configure's (in
@@ -253,6 +257,11 @@ func (b *Bot) Save(f Form, actor string) error {
 	current, err := b.Settings()
 	if err != nil {
 		return err
+	}
+	if token != "" && !current.FromEnv["token"] && !botTokenPattern.MatchString(token) {
+		// (a browser filling in the admin token it saved at the login, say)
+		return &core.ActionError{Code: "schema", Message: "the bot token is three parts joined by '.' " +
+			"(the Developer Portal's Bot page, Reset Token), not the admin token: type it again"}
 	}
 	var changes []string
 	set := func(name, key, value, label string) error {

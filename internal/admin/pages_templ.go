@@ -8261,7 +8261,7 @@ func discordPage(p view.Page, d discordView) templ.Component {
 						if templ_7745c5c3_Err != nil {
 							return templ_7745c5c3_Err
 						}
-						templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 571, "<input type=\"password\" id=\"token\" name=\"token\" maxlength=\"200\" autocomplete=\"off\" placeholder=\"")
+						templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 571, "<input type=\"password\" id=\"bot_token\" name=\"bot_token\" maxlength=\"200\" autocomplete=\"new-password\" placeholder=\"")
 						if templ_7745c5c3_Err != nil {
 							return templ_7745c5c3_Err
 						}
@@ -8303,7 +8303,7 @@ func discordPage(p view.Page, d discordView) templ.Component {
 						}
 						return nil
 					})
-					templ_7745c5c3_Err = view.FormField("token", "Bot token", tokenHint(d)).Render(templ.WithChildren(ctx, templ_7745c5c3_Var555), templ_7745c5c3_Buffer)
+					templ_7745c5c3_Err = view.FormField("bot_token", "Bot token", tokenHint(d)).Render(templ.WithChildren(ctx, templ_7745c5c3_Var555), templ_7745c5c3_Buffer)
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
@@ -8450,7 +8450,7 @@ func discordPage(p view.Page, d discordView) templ.Component {
 						if templ_7745c5c3_Err != nil {
 							return templ_7745c5c3_Err
 						}
-						templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 586, "<input type=\"password\" id=\"client_secret\" name=\"client_secret\" maxlength=\"128\" autocomplete=\"off\" placeholder=\"")
+						templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 586, "<input type=\"password\" id=\"client_secret\" name=\"client_secret\" maxlength=\"128\" autocomplete=\"new-password\" placeholder=\"")
 						if templ_7745c5c3_Err != nil {
 							return templ_7745c5c3_Err
 						}

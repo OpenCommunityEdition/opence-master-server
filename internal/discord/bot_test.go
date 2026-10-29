@@ -306,7 +306,7 @@ func (h *harness) get(path string) (int, string) {
 }
 
 func settings() url.Values {
-	return url.Values{"token": {token}, "guild": {guild}, "invite": {"https://discord.gg/opence"}}
+	return url.Values{"bot_token": {token}, "guild": {guild}, "invite": {"https://discord.gg/opence"}}
 }
 
 // until waits for a condition (the bot connects on its own goroutine).
@@ -818,7 +818,7 @@ func TestTokenAndConnectionErrors(t *testing.T) {
 	})
 	// a refused token
 	bad := settings()
-	bad.Set("token", "bad-token-0123456789-0123456789-abcdef")
+	bad.Set("bot_token", "bad-token-0123456789.Gabcde.0123456789-abcdef")
 	h.configure(bad)
 	h.until("refused", func() bool { return h.bot.State().Status == discord.Failed })
 	_, page = h.get("/admin/discord")
@@ -861,6 +861,30 @@ func TestTokenAndConnectionErrors(t *testing.T) {
 	}
 }
 
+// A browser filling the admin token it saved into the bot token's field
+// does not replace the bot's token: the field is not one it fills, and a
+// token of another shape is refused.
+func TestAdminTokenNotTakenForTheBots(t *testing.T) {
+	h := newHarness(t, nil, nil)
+	if status, _ := h.configure(settings()); status != 200 {
+		t.Fatal(status)
+	}
+	_, page := h.get("/admin/discord")
+	if !strings.Contains(page, `name="bot_token"`) || strings.Contains(page, `name="token"`) ||
+		strings.Count(page, `autocomplete="new-password"`) != 2 {
+		t.Fatalf("the page:\n%s", page)
+	}
+	form := settings()
+	form.Set("bot_token", strings.Repeat("0123456789abcdef", 4))
+	form.Set("invite", "https://discord.gg/other")
+	if status, page := h.configure(form); status == 200 || !strings.Contains(page, "not the admin token") {
+		t.Fatalf("an admin token taken for the bot's: %d\n%s", status, page)
+	}
+	if s, _ := h.bot.Settings(); s.Token != token || s.Invite != "https://discord.gg/opence" {
+		t.Fatalf("settings %+v", s)
+	}
+}
+
 // The environment's settings win, and the page cannot change them.
 func TestEnvironmentSettings(t *testing.T) {
 	h := newHarness(t, func(cfg *config.Config) {
@@ -869,7 +893,7 @@ func TestEnvironmentSettings(t *testing.T) {
 	h.until("connected", func() bool { return h.bot.State().Status == discord.Connected })
 	form := settings()
 	form.Set("guild", "100000000000000077")
-	form.Set("token", "other-token-0123456789-0123456789-abcdef")
+	form.Set("bot_token", "other-token-0123456789-0123456789-abcdef")
 	if status, _ := h.configure(form); status != 200 {
 		t.Fatal(status)
 	}
