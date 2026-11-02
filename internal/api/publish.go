@@ -397,6 +397,15 @@ func (s *Server) publishHandler(w *resultWriter, r *http.Request) {
 		server.ProbeAddress, server.Probe, server.Reachable, server.ProbedAt = probeAddress, string(probe.Pending),
 			false, 0
 	}
+	if err := s.M.Store.PutServerLimited(server, s.M.Config.MaxServers,
+		now.Unix()-int64(core.TTL/time.Second)); err != nil {
+		if errors.Is(err, store.ErrServerLimit) {
+			s.fail(w, http.StatusForbidden, "master_capacity", "the master has reached its live server limit", "")
+		} else {
+			s.internal(w, err)
+		}
+		return
+	}
 	switch {
 	case !s.M.Config.Probe:
 		server.Probe = "off"
@@ -430,7 +439,7 @@ func (s *Server) publishHandler(w *resultWriter, r *http.Request) {
 			"to", id)
 		s.invalidate()
 	}
-	if err := s.M.Store.PutServer(server); err != nil {
+	if err := s.M.Store.SetProbe(server.ID, server.ProbeAddress, server.Probe, server.Reachable, server.ProbedAt); err != nil {
 		s.internal(w, err)
 		return
 	}

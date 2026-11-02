@@ -48,6 +48,7 @@ type Config struct {
 	SMTPTLS             string
 	MailFrom            string
 	DefaultQuota        int
+	MaxServers          int
 	PublishInterval     time.Duration
 	ListPerMinute       int
 	ApplicationsPerDay  int
@@ -125,6 +126,7 @@ var Options = []Option{
 	{"MASTER_SMTP_TLS", "smtp-tls", "auto (implicit TLS on port 465, else STARTTLS), starttls, tls, or none (loopback only)", "auto"},
 	{"MASTER_MAIL_FROM", "mail-from", "the mails' From address", ""},
 	{"MASTER_DEFAULT_QUOTA", "default-quota", "servers at once for a new publisher", "4"},
+	{"MASTER_MAX_SERVERS", "max-servers", "live servers across all publishers (0: unlimited)", "0"},
 	{"MASTER_PUBLISH_MIN_INTERVAL", "publish-min-interval", "the least time between a server's publishes (a burst of 2)", "5s"},
 	{"MASTER_LIST_RATE", "list-rate", "list requests a minute per address", "60"},
 	{"MASTER_APPLICATIONS_PER_DAY", "applications-per-day", "applications a day per Discord user", "3"},
@@ -251,6 +253,11 @@ func Load(values map[string]*string) (*Config, error) {
 	check(err, "MASTER_REQUIRE_PROOF")
 	c.LogAddresses, err = boolean(get("MASTER_LOG_ADDRESSES"))
 	check(err, "MASTER_LOG_ADDRESSES")
+	c.MaxServers, err = strconv.Atoi(get("MASTER_MAX_SERVERS"))
+	check(err, "MASTER_MAX_SERVERS")
+	if c.MaxServers < 0 {
+		errs = append(errs, errors.New("MASTER_MAX_SERVERS: zero or greater"))
+	}
 	c.DefaultQuota, err = strconv.Atoi(get("MASTER_DEFAULT_QUOTA"))
 	check(err, "MASTER_DEFAULT_QUOTA")
 	c.ListPerMinute, err = strconv.Atoi(get("MASTER_LIST_RATE"))

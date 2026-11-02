@@ -308,6 +308,7 @@ are least restricted, never one a flood drained while a fuller one is held.
 | `MASTER_SMTP_ADDR`, `MASTER_SMTP_USER`, `MASTER_SMTP_PASSWORD`, `MASTER_MAIL_FROM` | | Mail, to the operators of the earlier web form's applications when they are decided (`MASTER_SMTP_ADDR` is `host:port`); without an SMTP server, mails are written to the log whole. The bot's applicants are told by Discord |
 | `MASTER_SMTP_TLS` | `auto` | TLS to the SMTP server, always: `auto` (implicit TLS on port 465, else STARTTLS), `starttls` (a server that does not offer it is refused, nothing is sent), `tls` (implicit TLS on any port), or `none` (only for an SMTP server on loopback). Certificates are checked against the system's authorities and `MASTER_CA_FILE` |
 | `MASTER_DEFAULT_QUOTA` | `4` | Servers at once for a new publisher (1 to 1000) |
+| `MASTER_MAX_SERVERS` | `0` | Live server registrations across all publishers (0: unlimited). Closed or expired registrations release capacity; hidden and unreachable live registrations still count. Existing live servers may renew after lowering the limit; no records are deleted. This limits directory registrations, not game server processes. |
 | `MASTER_PUBLISH_MIN_INTERVAL` | `5s` | The least time between one server's publishes (a burst of 2) |
 | `MASTER_LIST_RATE` | `60` | Requests a minute per address for the list, one server, a publisher's page, the list page, `/metrics`, the netlist and the passes together |
 | `MASTER_APPLICATIONS_PER_DAY` | `3` | Applications a day per Discord user, who has one pending at a time (checked first) |

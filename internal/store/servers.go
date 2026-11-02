@@ -105,15 +105,33 @@ func (s *Store) LiveHostKey(hostKey []byte, since int64, otherThan string) ([]mo
 		id LIMIT 64`, hostKey, since, otherThan)
 }
 
+// ErrServerLimit means a new live server would exceed the master's cap.
+var ErrServerLimit = errors.New("master server limit reached")
+
 // PutServer stores a server's record whole.
 func (s *Store) PutServer(v *model.Server) error {
-	_, err := s.db.Exec(`INSERT OR REPLACE INTO servers (`+serverColumns+`) VALUES (`+placeholders(40)+`)`,
+	return s.PutServerLimited(v, 0, 0)
+}
+
+// PutServerLimited checks admission and writes in one statement. Existing live
+// servers can renew even after the operator lowers the cap; no data is deleted.
+func (s *Store) PutServerLimited(v *model.Server, maximum int, since int64) error {
+	result, err := s.db.Exec(`INSERT OR REPLACE INTO servers (`+serverColumns+`) SELECT `+placeholders(40)+`
+		WHERE ? = 0 OR EXISTS (SELECT 1 FROM servers WHERE id = ? AND closed = 0 AND updated >= ?)
+		OR (SELECT COUNT(*) FROM servers WHERE closed = 0 AND updated >= ?) < ?`,
 		v.ID, v.PublisherID, v.KeyID, v.Instance, v.Name, v.Map, v.Gametype, v.Variant, v.Players, v.MaxPlayers,
 		boolean(v.Teams), boolean(v.InProgress), boolean(v.Password), boolean(v.Open), boolean(v.Dedicated), v.Kind,
 		v.Engine, v.NetworkVersion, v.Build, v.Region, v.TunnelPort, v.Listing, v.HostKey, v.Sequence, v.ListingTime,
 		v.Observed, v.Declared, boolean(v.PublishAddress), v.ProbeAddress, v.Probe, boolean(v.Reachable), v.ProbedAt,
 		boolean(v.Hidden), v.HiddenReason, boolean(v.Trusted), boolean(v.Closed), v.Serial, v.Created, v.Updated,
-		v.ListingChanged)
+		v.ListingChanged, maximum, v.ID, since, since, maximum)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err == nil && n == 0 {
+		return ErrServerLimit
+	}
 	return err
 }
 
